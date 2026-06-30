@@ -7,3 +7,11 @@ services:
       - ./data:/app/data
     environment:
       - SCALP_DATA_FILE=/app/data/patient_session_analysis.csv
+
+  dashboard:
+    build: .
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data

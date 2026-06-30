@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python scalp_analysis.py --input patient_session_analysis.csv --drop-pct 5.0)",
+      "Bash(python3 -m pip install streamlit plotly -q)",
+      "Bash(python3 -m py_compile app.py)",
+      "Bash(python3 -m streamlit --version)",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}

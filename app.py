@@ -18,8 +18,8 @@ PALETTE      = px.colors.qualitative.Plotly
 MIN_SESSIONS = 2
 
 METRICS = {
-    "hair_density_hairs_cm2": "Hair Density (hair/cm²)",
-    "hair_thickness_um":      "Hair Thickness (µm)",
+    "hair_density_hairs_per_cm2": "Hair Density (hair/cm²)",
+    "hair_thickness_um":          "Hair Thickness (µm)",
 }
 
 _RED  = "background-color: rgba(229,57,53,0.15); color: #e53935"
@@ -47,14 +47,14 @@ def _load(file_bytes: bytes) -> pd.DataFrame:
     df["session_no"] = df.groupby("patient_id")["session_date"].transform(
         lambda x: x.rank(method="dense").astype(int)
     )
-    return df.sort_values(["patient_id", "region", "session_no"])
+    return df.sort_values(["patient_id", "scalp_region", "session_no"])
 
 
 @st.cache_data(show_spinner=False)
 def _analyze(df: pd.DataFrame, pid: str, threshold: float) -> pd.DataFrame:
     pat    = df[df["patient_id"] == pid].copy()
     frames = []
-    for (_, region), grp in pat.groupby(["patient_id", "region"], sort=False):
+    for (_, region), grp in pat.groupby(["patient_id", "scalp_region"], sort=False):
         grp = grp.sort_values("session_no").copy()
         for metric in METRICS:
             vals = grp[metric].values.astype(float)
@@ -136,8 +136,8 @@ outlier_count = int(sum(
 
 # ── Summary cards ─────────────────────────────────────────────────────────────
 
-total_sessions = df["session_no"].nunique()
-total_regions  = df["region"].nunique()
+total_sessions = len(df[["patient_id", "session_no"]].drop_duplicates())
+total_regions  = df["scalp_region"].nunique()
 last_date      = df["session_date"].max()
 last_date_str  = last_date.strftime("%d %b %Y") if pd.notna(last_date) else "—"
 
@@ -163,7 +163,7 @@ st.divider()
 # ── Chart renderer ─────────────────────────────────────────────────────────────
 
 def _render_chart(metric: str, label: str) -> None:
-    all_regions    = sorted(df["region"].unique())
+    all_regions    = sorted(df["scalp_region"].unique())
     selected: list = st.multiselect(
         "Bölge Seçimi", options=all_regions, default=all_regions, key=f"sel_{metric}",
     )
@@ -180,7 +180,7 @@ def _render_chart(metric: str, label: str) -> None:
     for idx, region in enumerate(selected):
         color      = PALETTE[idx % len(PALETTE)]
         fill_color = _to_rgba(color, 0.15)
-        grp        = df[df["region"] == region].sort_values("session_date")
+        grp        = df[df["scalp_region"] == region].sort_values("session_date")
 
         # Main line
         fig.add_trace(go.Scatter(
@@ -256,42 +256,43 @@ with left_col:
 with right_col:
     st.subheader("Terminal / Vellus Sayımı")
 
-    tv = (
-        df.groupby("session_date")
-        .agg(
-            Terminal=("hair_type", lambda x: (x == "Terminal").sum()),
-            Vellus  =("hair_type", lambda x: (x == "Vellus").sum()),
+    if "hair_type" in df.columns:
+        tv = (
+            df.groupby("session_date")
+            .agg(
+                Terminal=("hair_type", lambda x: (x == "Terminal").sum()),
+                Vellus  =("hair_type", lambda x: (x == "Vellus").sum()),
+            )
+            .reset_index()
+            .sort_values("session_date")
         )
-        .reset_index()
-        .sort_values("session_date")
-    )
-    tv["T/V Oranı"] = tv.apply(
-        lambda r: f"{r['Terminal'] / r['Vellus']:.2f}" if r["Vellus"] > 0 else "N/A",
-        axis=1,
-    )
-    tv_disp = pd.DataFrame({
-        "Tarih":     tv["session_date"].dt.strftime("%Y-%m-%d"),
-        "Terminal":  tv["Terminal"],
-        "Vellus":    tv["Vellus"],
-        "T/V Oranı": tv["T/V Oranı"],
-    })
-    # Keep raw dates alongside for styling comparison
-    _tv_dates = tv["session_date"].values
+        tv["T/V Oranı"] = tv.apply(
+            lambda r: f"{r['Terminal'] / r['Vellus']:.2f}" if r["Vellus"] > 0 else "N/A",
+            axis=1,
+        )
+        tv_disp = pd.DataFrame({
+            "Tarih":     tv["session_date"].dt.strftime("%Y-%m-%d"),
+            "Terminal":  tv["Terminal"],
+            "Vellus":    tv["Vellus"],
+            "T/V Oranı": tv["T/V Oranı"],
+        })
 
-    def _tv_style(row):
-        try:
-            if pd.Timestamp(row["Tarih"]) in outlier_sessions:
-                return [_RED] * len(row)
-        except Exception:
-            pass
-        return [_NORM] * len(row)
+        def _tv_style(row):
+            try:
+                if pd.Timestamp(row["Tarih"]) in outlier_sessions:
+                    return [_RED] * len(row)
+            except Exception:
+                pass
+            return [_NORM] * len(row)
 
-    st.dataframe(
-        tv_disp.style.apply(_tv_style, axis=1),
-        use_container_width=True,
-        hide_index=True,
-        height=390,
-    )
+        st.dataframe(
+            tv_disp.style.apply(_tv_style, axis=1),
+            use_container_width=True,
+            hide_index=True,
+            height=390,
+        )
+    else:
+        st.info("Bu veri setinde `hair_type` sütunu yok.")
 
 
 # ── Outlier detail table ───────────────────────────────────────────────────────
@@ -310,7 +311,7 @@ for metric, label in METRICS.items():
         val = float(row[metric])
         rows.append({
             "Hasta":         f"{row['first_name']} {row['last_name']}",
-            "Bölge":         row["region"],
+            "Bölge":         row["scalp_region"],
             "Seans Tarihi":  row["session_date"].strftime("%Y-%m-%d") if pd.notna(row["session_date"]) else "—",
             "Metrik":        label,
             "Değer":         val,

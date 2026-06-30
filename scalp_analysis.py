@@ -329,7 +329,7 @@ def save_json(
         "summary": {
             "total_records":   len(df),
             "total_patients":  int(df["patient_id"].nunique()),
-            "total_sessions":  int(df["session_no"].nunique()),
+            "total_sessions":  int(len(df[["patient_id", "session_no"]].drop_duplicates())),
             "total_red_flags": len(red_flags),
         },
         "red_flags": red_flags,

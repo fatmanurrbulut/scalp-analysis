@@ -172,7 +172,7 @@ def _build_response(
         summary=AnalysisSummary(
             total_records=int(len(df)),
             total_patients=int(df["patient_id"].nunique()),
-            total_sessions=int(df["session_no"].nunique()),
+            total_sessions=int(len(df[["patient_id", "session_no"]].drop_duplicates())),
             total_red_flags=len(red_flags),
         ),
         red_flags=[RedFlagRecord(**r) for r in red_flags],
@@ -335,7 +335,15 @@ async def analyze(
                 )
             df                 = _json_records_to_df(records)
             patient_thresholds = body.get("thresholds") or None
-            drop_pct           = body.get("default_drop_pct", drop_pct)
+            if "default_drop_pct" in body:
+                raw = body["default_drop_pct"]
+                try:
+                    raw = float(raw)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=422, detail="default_drop_pct sayısal olmalı")
+                if not (0.1 <= raw <= 100.0):
+                    raise HTTPException(status_code=422, detail="default_drop_pct 0.1–100.0 arasında olmalı")
+                drop_pct = raw
         else:
             raise HTTPException(
                 status_code=422,
