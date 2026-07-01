@@ -27,7 +27,13 @@ from scalp_analysis import (
     REQUIRED_COLUMNS,
     detect_red_flags,
 )
-from trend_analysis import TREND_REQUIRED_COLUMNS, analyze_trend
+from trend_analysis import (
+    BIO_REQUIRED_COLUMNS,
+    TREND_REQUIRED_COLUMNS,
+    analyze_clinic_trend,
+    analyze_patient_trend,
+    analyze_trend,
+)
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 
@@ -98,6 +104,57 @@ class TrendResponse(BaseModel):
     trends:        list[TrendRecord]
 
 
+# ─── Dashboard DTOs ────────────────────────────────────────────────────────────
+
+class PatientTrendSummary(BaseModel):
+    avg_density:        float
+    avg_thickness:      float
+    terminal_pct:       float
+    intermediate_pct:   float
+    vellus_pct:         float
+
+
+class RegionTrendRecord(BaseModel):
+    region:             str
+    direction:          str
+    delta_density:      float | None
+    delta_density_pct:  float | None
+    delta_thickness:    float | None
+    delta_thickness_pct: float | None
+    delta_terminal_pct: float | None
+    slope:              float | None
+    slope_pct:          float | None
+    r_squared:          float | None
+    p_value:            float | None
+    is_significant:     bool
+    session_count:      int
+    predicted_next:     float | None
+
+
+class PatientTrendResponse(BaseModel):
+    patient_id:         str
+    patient_name:       str
+    overall_direction:  str
+    summary:            PatientTrendSummary
+    regions:            list[RegionTrendRecord]
+
+
+class ClinicTrendResponse(BaseModel):
+    generated_at:               str
+    total_patients:             int
+    avg_density:                float
+    avg_thickness:              float
+    avg_terminal_pct:           float
+    avg_intermediate_pct:       float
+    avg_vellus_pct:             float
+    region_highest_improvement: str | None
+    region_highest_deterioration: str | None
+    improving_patients:         int
+    worsening_patients:         int
+    stable_patients:            int
+    patients:                   list[PatientTrendResponse]
+
+
 # ─── Internal Helpers ─────────────────────────────────────────────────────────
 
 _DROP_PCT_QUERY = Query(
@@ -117,7 +174,20 @@ def _validate_df(df: pd.DataFrame) -> None:
 
 def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     df["session_date"] = pd.to_datetime(df["session_date"], errors="coerce")
-    return df.sort_values(["patient_id", "scalp_region", "session_no"])
+    if "scalp_region" in df.columns and "session_no" in df.columns:
+        return df.sort_values(["patient_id", "scalp_region", "session_no"])
+    region_col = "region" if "region" in df.columns else None
+    sort_cols = [c for c in ["patient_id", region_col, "session_date"] if c]
+    return df.sort_values(sort_cols) if sort_cols else df
+
+
+def _validate_bio_df(df: pd.DataFrame) -> None:
+    missing = BIO_REQUIRED_COLUMNS - set(df.columns)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "Eksik sütunlar", "columns": sorted(missing)},
+        )
 
 
 def _csv_to_df(content: bytes) -> pd.DataFrame:
@@ -201,6 +271,16 @@ def _run_analysis(
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
+
+def _to_patient_trend_response(data: dict) -> PatientTrendResponse:
+    return PatientTrendResponse(
+        patient_id=data["patient_id"],
+        patient_name=data["patient_name"],
+        overall_direction=data["overall_direction"],
+        summary=PatientTrendSummary(**data["summary"]),
+        regions=[RegionTrendRecord(**r) for r in data["regions"]],
+    )
+
 
 def _nan_to_none(val) -> float | None:
     if val is None:
@@ -400,23 +480,32 @@ async def analyze_patient(
 
 @app.get(
     "/trend/{patient_id}",
-    response_model=TrendResponse,
+    response_model=PatientTrendResponse,
     tags=["trend"],
-    summary="Tek hasta trend analizi",
+    summary="Tek hasta trend analizi (dashboard)",
 )
-async def trend_patient(patient_id: str) -> TrendResponse:
+async def trend_patient(
+    patient_id: str,
+    threshold_pct: float = Query(
+        default=10.0, ge=0.1, le=100.0,
+        description="Önceki seansa göre % değişim eşiği (varsayılan: 10.0)",
+    ),
+) -> PatientTrendResponse:
     """
-    Belirli bir hasta için bölge ve metrik bazında trend analizi.
+    Belirli bir hasta için bölge bazlı delta analizi + linear regression.
 
     Veri kaynağı: `SCALP_DATA_FILE` ortam değişkeni ile tanımlı CSV dosyası.
 
-    Her (bölge × metrik) kombinasyonu için:
-    - `direction`: increasing / decreasing / stable / insufficient_data
-    - `slope`: seans başına ortalama değişim
-    - `slope_pct`: toplam tahmini yüzde değişim
-    - `r_squared`: modelin açıklayıcılığı (0–1)
-    - `p_value`: istatistiksel anlamlılık (< 0.05 → is_significant)
-    - `predicted_next`: bir sonraki seans için tahmin
+    Her bölge için:
+    - `direction`: Increasing / Decreasing / Stable (delta_density_pct vs threshold_pct)
+    - `delta_density / delta_density_pct`: son seans – önceki seans farkı
+    - `delta_thickness / delta_thickness_pct`: kalınlık değişimi
+    - `delta_terminal_pct`: Terminal yüzdesi değişimi
+    - `slope / r_squared / p_value / predicted_next`: linear regression çıktıları
+
+    Hasta özeti:
+    - `overall_direction`: Improving / Stable / Worsening (bölge çoğunluğu)
+    - `summary`: son seansın ortalama yoğunluk, kalınlık ve saç tipi dağılımı
     """
     if not _DEFAULT_DATA_FILE:
         raise HTTPException(
@@ -427,20 +516,36 @@ async def trend_patient(patient_id: str) -> TrendResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Veri dosyası bulunamadı: {_DEFAULT_DATA_FILE}")
 
-    df      = _csv_to_df(path.read_bytes())
-    results = _run_trend(df, patient_id=patient_id)
-    return results[0]
+    df = _csv_to_df(path.read_bytes())
+    _validate_bio_df(df)
+
+    if patient_id not in df["patient_id"].values:
+        raise HTTPException(status_code=404, detail=f"patient_id bulunamadı: {patient_id}")
+
+    try:
+        result = analyze_patient_trend(df, patient_id, threshold_pct)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return _to_patient_trend_response(result)
 
 
 @app.post(
     "/trend",
-    response_model=list[TrendResponse],
+    response_model=ClinicTrendResponse,
     tags=["trend"],
-    summary="Tüm veri seti trend analizi (CSV veya JSON)",
+    summary="Klinik geneli trend analizi (tüm hastalar)",
 )
-async def trend(request: Request) -> list[TrendResponse]:
+async def trend(
+    request: Request,
+    threshold_pct: float = Query(
+        default=10.0, ge=0.1, le=100.0,
+        description="Önceki seansa göre % değişim eşiği (varsayılan: 10.0)",
+    ),
+) -> ClinicTrendResponse:
     """
-    İki içerik türü desteklenir:
+    Tüm hastalara bölge bazlı delta + linear regression uygular,
+    ardından klinik geneli istatistikleri döner.
 
     **CSV yükleme** (`multipart/form-data`):
     ```
@@ -452,13 +557,16 @@ async def trend(request: Request) -> list[TrendResponse]:
     { "records": [{...}, {...}] }
     ```
 
-    Tüm hastalara trend analizi uygulanır; her hasta için ayrı bir
-    `TrendResponse` nesnesi döner.
+    Klinik özeti:
+    - `avg_density / avg_thickness / avg_terminal_pct …`: tüm hastalar ortalaması
+    - `region_highest_improvement / region_highest_deterioration`: ortalama delta_density_pct'e göre
+    - `improving_patients / worsening_patients / stable_patients`: hasta sayıları
+    - `patients`: her hasta için ayrı `PatientTrendResponse`
     """
     content_type = request.headers.get("content-type", "")
 
     if "multipart/form-data" in content_type:
-        form     = await request.form()
+        form = await request.form()
         uploaded = form.get("file")
         if uploaded is None:
             raise HTTPException(status_code=400, detail="`file` form alanı eksik")
@@ -485,4 +593,21 @@ async def trend(request: Request) -> list[TrendResponse]:
             detail="Desteklenmeyen content-type. Kullanın: multipart/form-data veya application/json",
         )
 
-    return _run_trend(df)
+    _validate_bio_df(df)
+    result = analyze_clinic_trend(df, threshold_pct)
+
+    return ClinicTrendResponse(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        total_patients=result["total_patients"],
+        avg_density=result["avg_density"],
+        avg_thickness=result["avg_thickness"],
+        avg_terminal_pct=result["avg_terminal_pct"],
+        avg_intermediate_pct=result["avg_intermediate_pct"],
+        avg_vellus_pct=result["avg_vellus_pct"],
+        region_highest_improvement=result["region_highest_improvement"],
+        region_highest_deterioration=result["region_highest_deterioration"],
+        improving_patients=result["improving_patients"],
+        worsening_patients=result["worsening_patients"],
+        stable_patients=result["stable_patients"],
+        patients=[_to_patient_trend_response(p) for p in result["patients"]],
+    )
