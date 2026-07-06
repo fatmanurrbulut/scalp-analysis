@@ -58,7 +58,7 @@ class AnomalyRecord(BaseModel):
     value:         float
     baseline_mean: float
     baseline_std:  float
-    z_score:       float
+    z_score:       float | None
     direction:     str
 
 
