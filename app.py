@@ -172,7 +172,7 @@ st.divider()
 def _render_chart(metric: str, label: str) -> None:
     all_regions    = sorted(df["region"].unique())
     selected: list = st.multiselect(
-        "Bölge Seçimi", options=all_regions, default=all_regions, key=f"sel_{metric}",
+        "Bölge Seçimi", options=all_regions, default=all_regions, key=f"sel_{metric}_{selected_pid}",
     )
     if not selected:
         st.warning("En az bir bölge seçin.")
