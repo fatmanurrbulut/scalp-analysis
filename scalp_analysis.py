@@ -33,7 +33,7 @@ import pandas as pd
 # ─── Sabitler ────────────────────────────────────────────────────────────────
 
 DEFAULT_DROP_PCT      = 10.0  # baseline'dan yüzde kaç düşüş → red flag
-MIN_SESSIONS_BASELINE = 2     # baseline için gereken min geçmiş seans sayısı
+MIN_SESSIONS_BASELINE = 1     # baseline için gereken min geçmiş seans sayısı
 
 
 # ─── ANSI Renk Kodları ───────────────────────────────────────────────────────
