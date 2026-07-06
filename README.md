@@ -1,6 +1,6 @@
 # Scalp Analysis API
 
-Saç ve kafa derisi seans verilerinden red flag tespiti ve trend analizi yapan FastAPI servisi.
+Saç ve kafa derisi seans verilerinden anomali tespiti ve trend analizi yapan FastAPI servisi.
 
 ## Kurulum ve Çalıştırma
 
@@ -33,8 +33,8 @@ Servis çalışırken: http://localhost:8000/docs
 | Yöntem | Endpoint | Açıklama |
 |--------|----------|----------|
 | GET | `/health` | Servis sağlık kontrolü |
-| POST | `/analyze` | Tüm veri seti red flag analizi (CSV veya JSON) |
-| GET | `/analyze/{patient_id}` | Tek hasta red flag analizi |
+| POST | `/analyze` | Tüm veri seti anomali analizi (CSV veya JSON) |
+| GET | `/analyze/{patient_id}` | Tek hasta anomali analizi |
 | POST | `/trend` | Tüm veri seti trend analizi |
 | GET | `/trend/{patient_id}` | Tek hasta trend analizi |
 
@@ -42,7 +42,7 @@ Servis çalışırken: http://localhost:8000/docs
 
 ```bash
 # CSV ile analiz
-curl -X POST "http://localhost:8000/analyze?drop_pct=10.0" \
+curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0" \
      -F "file=@data/mock_patient_session_analysis_biological.csv"
 
 # Tek hasta trend
@@ -53,33 +53,53 @@ curl "http://localhost:8000/trend/PATIENT-UUID"
 
 ## Analiz Algoritması
 
-### 1. Red Flag Tespiti (Rolling Baseline)
+### 1. Anomali Tespiti (Rolling Z-Score, Sabit Pencere)
 
 Her **hasta × bölge × metrik** kombinasyonu için şu adımlar uygulanır:
 
 1. Seanslar kronolojik sıraya göre sıralanır (`session_no` bazlı).
-2. Her N. seans için **baseline**, o seansa kadarki tüm önceki seansların ortalamasıdır:
+2. Her seans için **baseline**, o seanstan önceki **sabit boyutlu bir pencereden**
+   (varsayılan: son 3 seans, mevcut seans hariç) hesaplanır — tüm geçmiş değil:
 
    ```
-   baseline_mean(N) = mean(seans_1, seans_2, ..., seans_{N-1})
+   window_vals    = son min(window, i) seans  (mevcut seans haric)
+   baseline_mean  = window_vals.mean()
+   baseline_std   = window_vals.std(ddof=1)
    ```
 
-3. Düşüş yüzdesi hesaplanır:
+3. Z-score hesaplanır:
 
    ```
-   drop_pct = (baseline_mean - mevcut_değer) / baseline_mean × 100
+   z = (mevcut_değer - baseline_mean) / baseline_std
    ```
 
-4. `drop_pct > eşik` → **RED FLAG** (yalnızca düşüşler işaretlenir).
+4. `|z| > threshold` → **ANOMALİ** — hem artış (`direction=high`) hem düşüş
+   (`direction=low`) yakalanır.
+
+Sabit pencere bilinçli bir tercih: tüm geçmişi kullanan (expanding) bir
+baseline, ya bir sıçramanın std'yi şişirip sonraki gerçek anomalileri
+gizlemesine ya da (anomalili seanslar baseline'dan hariç tutulursa) baseline'ın
+donup kalmasına ve sürekli trend değişikliklerinde sonsuz alarm üretmesine yol
+açıyor. Sabit pencere, eski seansları zamanla kendiliğinden düşürerek ikisini
+de önler.
 
 **Parametreler:**
 
 | Parametre | Varsayılan | Açıklama |
 |-----------|-----------|----------|
-| `drop_pct` | `10.0` | Düşüş eşiği (%) |
-| `MIN_SESSIONS_BASELINE` | `2` | Baseline için gereken minimum geçmiş seans sayısı |
+| `window` | `3` | Baseline penceresi (seans sayısı) |
+| `threshold` | `2.0` | Z-score eşiği (± std) |
 
-Hasta bazlı farklı eşikler tanımlanabilir; `patient_thresholds` ile her hastaya ayrı eşik atanabilir.
+Toplam seans sayısı `window`'dan az olan (hasta, bölge) grupları için
+`direction="insufficient_data"` döner, anomali hesaplanmaz.
+
+**Çıktı değerleri:**
+
+| Çıktı | Açıklama |
+|-------|----------|
+| `baseline_mean`, `baseline_std` | Pencere istatistikleri |
+| `z_score` | Hesaplanan z-score |
+| `direction` | `high` / `low` / `insufficient_data` |
 
 **Analiz edilen metrikler:**
 
