@@ -327,6 +327,13 @@ def main():
     parser.add_argument("--patient-id", default=None, help="Tek hasta filtrele")
     args = parser.parse_args()
 
+    if not (2 <= args.window <= 30):
+        print(f"{C.RED}[HATA] --window 2–30 arasında olmalı (verilen: {args.window}){C.RESET}")
+        sys.exit(1)
+    if not (0.1 <= args.threshold <= 10.0):
+        print(f"{C.RED}[HATA] --threshold 0.1–10.0 arasında olmalı (verilen: {args.threshold}){C.RESET}")
+        sys.exit(1)
+
     print(f"\n{C.BOLD}{C.CYAN}"
           f"──────────────────────────────────────────────────\n"
           f"   Scalp Analysis – Rolling Z-Score Anomali Tespiti\n"
