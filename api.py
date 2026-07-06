@@ -55,7 +55,7 @@ class RedFlagRecord(BaseModel):
     patient_id:    str
     patient_name:  str
     session_no:    int
-    scalp_region:  str
+    region:        str
     metric:        str
     value:         float
     baseline_mean: float
@@ -149,11 +149,10 @@ def _validate_df(df: pd.DataFrame) -> None:
 
 def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     df["session_date"] = pd.to_datetime(df["session_date"], errors="coerce")
-    if "scalp_region" in df.columns and "session_no" in df.columns:
-        return df.sort_values(["patient_id", "scalp_region", "session_no"])
-    region_col = "region" if "region" in df.columns else None
-    sort_cols = [c for c in ["patient_id", region_col, "session_date"] if c]
-    return df.sort_values(sort_cols) if sort_cols else df
+    df["session_no"] = df.groupby("patient_id")["session_date"].transform(
+        lambda x: x.rank(method="dense").astype(int)
+    )
+    return df.sort_values(["patient_id", "region", "session_no"])
 
 
 def _validate_bio_df(df: pd.DataFrame) -> None:
@@ -194,7 +193,7 @@ def _extract_red_flags(df: pd.DataFrame, patient_thresholds: dict[str, float], d
                 "patient_id":    pid,
                 "patient_name":  f"{row['first_name']} {row['last_name']}",
                 "session_no":    int(row["session_no"]),
-                "scalp_region":  row["scalp_region"],
+                "region":        row["region"],
                 "metric":        metric,
                 "value":         val,
                 "baseline_mean": bm,
@@ -294,7 +293,7 @@ async def analyze(
     }
     ```
 
-    Her red flag için `patient_id`, `session_no`, `scalp_region`, `metric`,
+    Her red flag için `patient_id`, `session_no`, `region`, `metric`,
     `value`, `baseline_mean`, `baseline_std`, `drop_pct`, `threshold_pct` döner.
     """
     content_type       = request.headers.get("content-type", "")

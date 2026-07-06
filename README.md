@@ -9,7 +9,7 @@ Saç ve kafa derisi seans verilerinden red flag tespiti ve trend analizi yapan F
 ```bash
 # CSV dosyasını data/ klasörüne koy
 mkdir -p data
-cp patient_session_analysis.csv data/
+cp mock_patient_session_analysis_biological.csv data/
 
 docker compose up --build
 ```
@@ -21,7 +21,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-SCALP_DATA_FILE=patient_session_analysis.csv uvicorn api:app --reload --port 8000
+SCALP_DATA_FILE=mock_patient_session_analysis_biological.csv uvicorn api:app --reload --port 8000
 ```
 
 ## API Dokümantasyonu
@@ -43,7 +43,7 @@ Servis çalışırken: http://localhost:8000/docs
 ```bash
 # CSV ile analiz
 curl -X POST "http://localhost:8000/analyze?drop_pct=10.0" \
-     -F "file=@data/patient_session_analysis.csv"
+     -F "file=@data/mock_patient_session_analysis_biological.csv"
 
 # Tek hasta trend
 curl "http://localhost:8000/trend/PATIENT-UUID"
@@ -83,38 +83,41 @@ Hasta bazlı farklı eşikler tanımlanabilir; `patient_thresholds` ile her hast
 
 **Analiz edilen metrikler:**
 
-- `hair_density_hairs_per_cm2` — Saç yoğunluğu (hair/cm²)
+- `hair_density_hairs_cm2` — Saç yoğunluğu (hair/cm²)
 - `hair_thickness_um` — Saç kalınlığı (µm)
 
 ---
 
-### 2. Trend Analizi (Linear Regression)
+### 2. Trend Analizi (Son Seans Deltası + Lineer Regresyon)
 
-Her **hasta × bölge × metrik** kombinasyonu için seans verisine **lineer regresyon** uygulanır.
+Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar uygulanır:
 
-**Adımlar:**
+1. Seanslar `session_date`'e göre kronolojik sıraya dizilir.
+2. **Yön (`direction`)**, son iki seans arasındaki yoğunluk (`hair_density_hairs_cm2`) farkının yüzdesine göre belirlenir:
 
-1. Seans değerleri zaman serisi olarak sıralanır.
-2. `scipy.stats.linregress` ile `x = [0, 1, 2, ..., N-1]` üzerinden regresyon hesaplanır.
-3. Çıktı değerleri:
+   ```
+   delta_density_pct = (son_seans - önceki_seans) / önceki_seans × 100
+   ```
+
+   - `delta_density_pct > threshold_pct` → **Increasing**
+   - `delta_density_pct < -threshold_pct` → **Decreasing**
+   - Aksi durumda → **Stable**
+
+3. Ayrıca bilgilendirme amaçlı tüm seanslara `scipy.stats.linregress` ile lineer regresyon uygulanır — **`direction` kararına katılmaz**, sadece raporlamaya eklenir.
+
+**Çıktı değerleri:**
 
 | Çıktı | Açıklama |
 |-------|----------|
-| `slope` | Seans başına ortalama değişim |
-| `slope_pct` | Toplam değişimin ilk değere oranı (%) |
-| `r_squared` | Regresyonun açıklayıcılık gücü (0–1) |
-| `p_value` | İstatistiksel anlamlılık |
-| `is_significant` | `p_value < 0.05` ise `true` |
-| `direction` | `increasing` / `decreasing` / `stable` |
-| `predicted_next` | Bir sonraki seans için tahmin |
+| `direction` | `Increasing` / `Decreasing` / `Stable` (yukarıdaki delta kuralına göre) |
+| `delta_density`, `delta_density_pct` | Son iki seans arası yoğunluk farkı |
+| `delta_thickness`, `delta_thickness_pct` | Son iki seans arası kalınlık farkı |
+| `delta_terminal_pct` | Son iki seans arası Terminal saç yüzdesi farkı |
+| `slope`, `slope_pct` | Regresyon eğimi (bilgi amaçlı) |
+| `r_squared`, `p_value`, `is_significant` | Regresyonun istatistiksel değerleri (bilgi amaçlı) |
+| `predicted_next` | Regresyona göre bir sonraki seans tahmini |
 
-**Yön belirleme kuralı:**
-
-- `is_significant = false` → `stable`
-- `is_significant = true` ve `slope > 0` → `increasing`
-- `is_significant = true` ve `slope < 0` → `decreasing`
-
-Minimum `3` seans olmadan trend hesaplanmaz (`insufficient_data`).
+Minimum `2` seans olmadan delta/regresyon hesaplanmaz; `direction` varsayılan olarak `Stable`, diğer alanlar `null` döner.
 
 ---
 

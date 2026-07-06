@@ -6,7 +6,7 @@ services:
     volumes:
       - ./data:/app/data
     environment:
-      - SCALP_DATA_FILE=/app/data/patient_session_analysis.csv
+      - SCALP_DATA_FILE=/app/data/mock_patient_session_analysis_biological.csv
 
   dashboard:
     build: .

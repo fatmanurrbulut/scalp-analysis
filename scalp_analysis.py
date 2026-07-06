@@ -64,13 +64,13 @@ def section(title: str) -> None:
 # ─── Metrikler ───────────────────────────────────────────────────────────────
 
 METRICS = {
-    "hair_density_hairs_per_cm2": "Saç Yoğunluğu (hair/cm²)",
-    "hair_thickness_um":          "Saç Kalınlığı (µm)",
+    "hair_density_hairs_cm2": "Saç Yoğunluğu (hair/cm²)",
+    "hair_thickness_um":      "Saç Kalınlığı (µm)",
 }
 
 REQUIRED_COLUMNS = {
     "patient_id", "first_name", "last_name",
-    "session_no", "session_date", "scalp_region",
+    "session_date", "region",
 } | set(METRICS.keys())
 
 
@@ -90,7 +90,10 @@ def load_data(filepath: str, patient_id: str | None = None) -> pd.DataFrame:
         sys.exit(1)
 
     df["session_date"] = pd.to_datetime(df["session_date"], errors="coerce")
-    df = df.sort_values(["patient_id", "scalp_region", "session_no"])
+    df["session_no"] = df.groupby("patient_id")["session_date"].transform(
+        lambda x: x.rank(method="dense").astype(int)
+    )
+    df = df.sort_values(["patient_id", "region", "session_no"])
 
     if patient_id:
         df = df[df["patient_id"] == patient_id]
@@ -109,7 +112,7 @@ def detect_red_flags(
     patient_thresholds: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """
-    Her (patient_id, scalp_region, metric) grubu için:
+    Her (patient_id, region, metric) grubu için:
       - Seans N için baseline = seans 1..N-1 ortalaması
       - drop_pct = (baseline_mean - değer) / baseline_mean × 100
       - drop_pct > hasta_eşiği → RED FLAG  (sadece düşüş)
@@ -125,7 +128,7 @@ def detect_red_flags(
     result_frames = []
 
     # Her hasta × bölge ikilisi ayrı bir zaman serisi gibi ele alınır
-    for (pid, region), grp in df.groupby(["patient_id", "scalp_region"], sort=False):
+    for (pid, region), grp in df.groupby(["patient_id", "region"], sort=False):
         grp      = grp.sort_values("session_no").copy()
         threshold = pt.get(pid, default_drop_pct)  # hastaya özel eşik varsa onu kullan
 
@@ -172,7 +175,7 @@ def print_summary(df: pd.DataFrame) -> None:
     print(f"  Toplam kayıt  : {len(df)}")
     print(f"  Hasta sayısı  : {df['patient_id'].nunique()}")
     print(f"  Seans aralığı : {int(df['session_no'].min())}–{int(df['session_no'].max())}")
-    print(f"  Bölgeler      : {', '.join(sorted(df['scalp_region'].unique()))}")
+    print(f"  Bölgeler      : {', '.join(sorted(df['region'].unique()))}")
     print()
     for metric, label in METRICS.items():
         s = df[metric]
@@ -207,7 +210,7 @@ def print_red_flags(
 
             line = (
                 f"{row['first_name']} {row['last_name']} | "
-                f"Bölge: {row['scalp_region']:12s} | "
+                f"Bölge: {row['region']:12s} | "
                 f"Seans: {sno} | "
                 f"{label}: {val}  "
                 f"(baseline: {bm}, düşüş: %{dp:.1f}, eşik: %{threshold})"
@@ -217,7 +220,7 @@ def print_red_flags(
                 "patient_id":    pid,
                 "patient_name":  f"{row['first_name']} {row['last_name']}",
                 "session_no":    sno,
-                "scalp_region":  row["scalp_region"],
+                "region":        row["region"],
                 "metric":        metric,
                 "value":         val,
                 "baseline_mean": bm,
@@ -235,12 +238,12 @@ def print_red_flags(
         if col not in df.columns:
             continue
         mask = (
-            (df["session_no"] > df.groupby(["patient_id", "scalp_region"])["session_no"].transform("min"))
+            (df["session_no"] > df.groupby(["patient_id", "region"])["session_no"].transform("min"))
             & df[col].isna()
         )
         if mask.any():
-            for _, row in df[mask].drop_duplicates(["patient_id", "scalp_region"]).iterrows():
-                skipped.append(f"{row['first_name']} {row['last_name']} – {row['scalp_region']}")
+            for _, row in df[mask].drop_duplicates(["patient_id", "region"]).iterrows():
+                skipped.append(f"{row['first_name']} {row['last_name']} – {row['region']}")
 
     if skipped:
         print()
@@ -260,7 +263,7 @@ def print_trend(df: pd.DataFrame) -> None:
         last = pgrp[pgrp["session_no"] == last_session]
 
         print(f"\n  {C.BOLD}{name}{C.RESET}  (Seans {last_session})")
-        for _, row in last.sort_values("scalp_region").iterrows():
+        for _, row in last.sort_values("region").iterrows():
             for metric, label in METRICS.items():
                 bm  = row.get(f"{metric}_baseline_mean", np.nan)
                 dp  = row.get(f"{metric}_drop_pct", np.nan)
@@ -276,7 +279,7 @@ def print_trend(df: pd.DataFrame) -> None:
                     else:
                         arrow  = "↑" if (not np.isnan(dp) and dp < 0) else "→"
                         status = f"{C.GREEN}{arrow} {val - bm:+.1f}{C.RESET}"
-                print(f"    {row['scalp_region']:12s}  {label}: {val:>4}  {status}")
+                print(f"    {row['region']:12s}  {label}: {val:>4}  {status}")
 
 
 # ─── JSON Rapor ──────────────────────────────────────────────────────────────

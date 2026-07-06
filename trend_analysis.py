@@ -10,23 +10,7 @@ import pandas as pd
 from scipy.stats import linregress
 
 
-TREND_METRICS = {
-    "hair_density_hairs_per_cm2": "Saç Yoğunluğu (hair/cm²)",
-    "hair_thickness_um":          "Saç Kalınlığı (µm)",
-}
-
-TREND_REQUIRED_COLUMNS = {
-    "patient_id", "first_name", "last_name",
-    "session_no", "scalp_region",
-} | set(TREND_METRICS.keys())
-
-
 # ─── Biological CSV constants ──────────────────────────────────────────────────
-# DİKKAT: Bu sütun seti, ana veri dosyası patient_session_analysis.csv'den FARKLI
-# bir şema — "region" (scalp_region değil), "hair_density_hairs_cm2"
-# (hair_density_hairs_per_cm2 değil) ve "hair_type" (ana CSV'de yok).
-# /trend endpoint'lerinin çalışması için mock_patient_session_analysis_biological.csv
-# gibi bu şemaya uygun bir dosya gerekiyor; ana CSV verilirse 422 hatası alınır.
 BIO_REQUIRED_COLUMNS = {
     "patient_id", "first_name", "last_name",
     "session_date", "region",
