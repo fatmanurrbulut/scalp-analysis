@@ -74,6 +74,10 @@ def _analyze(df: pd.DataFrame, pid: str, threshold: float) -> pd.DataFrame:
                 if s > 0:
                     zs[i]  = round((vals[i] - m) / s, 3)
                     fgs[i] = bool(abs(zs[i]) > threshold)
+                elif vals[i] != m:
+                    # gecmis seanslar birebir ayni (std=0) -> z tanimsiz,
+                    # ama sabit degerden herhangi bir sapma zaten anormal
+                    fgs[i] = True
             grp[f"{metric}_bm"]      = bms
             grp[f"{metric}_bs"]      = bss
             grp[f"{metric}_z"]       = zs
