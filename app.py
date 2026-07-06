@@ -108,12 +108,18 @@ with st.sidebar:
         "Hasta",
         options=list(patient_map.keys()),
         format_func=lambda x: patient_map[x],
+        index=None,
+        placeholder="Bir hasta seçin",
     )
 
     threshold = st.slider(
         "Outlier Eşiği (std)",
         min_value=1.0, max_value=4.0, value=2.0, step=0.1,
     )
+
+    if selected_pid is None:
+        st.info("Devam etmek için bir hasta seçin.")
+        st.stop()
 
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
