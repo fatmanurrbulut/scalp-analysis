@@ -100,6 +100,7 @@ with st.sidebar:
         df_raw[["patient_id", "first_name", "last_name"]]
         .drop_duplicates("patient_id")
         .assign(label=lambda d: d["first_name"] + " " + d["last_name"])
+        .sort_values("label")
         .set_index("patient_id")["label"]
         .to_dict()
     )
