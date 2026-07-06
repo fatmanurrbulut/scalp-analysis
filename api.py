@@ -188,6 +188,7 @@ def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
         if col not in df.columns:
             continue
         for _, row in df[df[col]].iterrows():
+            z = row[f"{metric}_z"]
             found.append({
                 "patient_id":    row["patient_id"],
                 "patient_name":  f"{row['first_name']} {row['last_name']}",
@@ -197,7 +198,7 @@ def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
                 "value":         float(row[metric]),
                 "baseline_mean": float(row[f"{metric}_baseline_mean"]),
                 "baseline_std":  float(row[f"{metric}_baseline_std"]),
-                "z_score":       float(row[f"{metric}_z"]),
+                "z_score":       None if pd.isna(z) else float(z),
                 "direction":     row[f"{metric}_direction"],
             })
     return found
