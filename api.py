@@ -14,7 +14,6 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -29,10 +28,8 @@ from scalp_analysis import (
 )
 from trend_analysis import (
     BIO_REQUIRED_COLUMNS,
-    TREND_REQUIRED_COLUMNS,
     analyze_clinic_trend,
     analyze_patient_trend,
-    analyze_trend,
 )
 
 # ─── App ──────────────────────────────────────────────────────────────────────
@@ -80,28 +77,6 @@ class AnalyzeResponse(BaseModel):
     default_drop_pct: float
     summary:       AnalysisSummary
     red_flags:     list[RedFlagRecord]
-
-
-class TrendRecord(BaseModel):
-    scalp_region:    str
-    metric:          str
-    direction:       str
-    slope:           float | None
-    slope_pct:       float | None
-    r_squared:       float | None
-    p_value:         float | None
-    is_significant:  bool
-    session_count:   int
-    first_value:     float | None
-    last_value:      float | None
-    predicted_next:  float | None
-
-
-class TrendResponse(BaseModel):
-    patient_id:    str
-    patient_name:  str
-    generated_at:  str
-    trends:        list[TrendRecord]
 
 
 # ─── Dashboard DTOs ────────────────────────────────────────────────────────────
@@ -280,69 +255,6 @@ def _to_patient_trend_response(data: dict) -> PatientTrendResponse:
         summary=PatientTrendSummary(**data["summary"]),
         regions=[RegionTrendRecord(**r) for r in data["regions"]],
     )
-
-
-def _nan_to_none(val) -> float | None:
-    if val is None:
-        return None
-    try:
-        return None if np.isnan(val) else float(val)
-    except (TypeError, ValueError):
-        return None
-
-
-def _build_trend_responses(trend_df: pd.DataFrame) -> list[TrendResponse]:
-    now = datetime.now(timezone.utc).isoformat()
-    responses = []
-    for pid, pgrp in trend_df.groupby("patient_id"):
-        name   = str(pgrp.iloc[0]["patient_name"])
-        trends = [
-            TrendRecord(
-                scalp_region=str(row["scalp_region"]),
-                metric=str(row["metric"]),
-                direction=str(row["direction"]),
-                slope=_nan_to_none(row.get("slope")),
-                slope_pct=_nan_to_none(row.get("slope_pct")),
-                r_squared=_nan_to_none(row.get("r_squared")),
-                p_value=_nan_to_none(row.get("p_value")),
-                is_significant=bool(row["is_significant"]),
-                session_count=int(row["session_count"]),
-                first_value=_nan_to_none(row.get("first_value")),
-                last_value=_nan_to_none(row.get("last_value")),
-                predicted_next=_nan_to_none(row.get("predicted_next")),
-            )
-            for _, row in pgrp.iterrows()
-        ]
-        responses.append(TrendResponse(
-            patient_id=str(pid),
-            patient_name=name,
-            generated_at=now,
-            trends=trends,
-        ))
-    return responses
-
-
-def _run_trend(
-    df: pd.DataFrame,
-    patient_id: str | None = None,
-) -> list[TrendResponse]:
-    missing = TREND_REQUIRED_COLUMNS - set(df.columns)
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "Eksik sütunlar", "columns": sorted(missing)},
-        )
-    if patient_id:
-        df = df[df["patient_id"] == patient_id]
-        if df.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=f"patient_id bulunamadı: {patient_id}",
-            )
-    trend_df = analyze_trend(df)
-    if trend_df.empty:
-        return []
-    return _build_trend_responses(trend_df)
 
 
 @app.get("/health", tags=["meta"], summary="Servis sağlık kontrolü")

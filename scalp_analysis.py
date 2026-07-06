@@ -101,47 +101,6 @@ def load_data(filepath: str, patient_id: str | None = None) -> pd.DataFrame:
     return df
 
 
-# ─── Rolling Baseline Outlier Tespiti (z-score) ──────────────────────────────
-
-def detect_outliers(df: pd.DataFrame, threshold: float) -> pd.DataFrame:
-    """
-    Her (patient_id, scalp_region, metric) grubu için:
-      - Seans N için baseline = seans 1..N-1 ortalaması ve std'si
-      - |z-score| > threshold → OUTLIER (hem düşüş hem yükseliş)
-
-    Dönen DataFrame: orijinal sütunlar +
-        {metric}_baseline_mean, {metric}_baseline_std,
-        {metric}_z, {metric}_is_outlier
-    """
-    result_frames = []
-    for (pid, region), grp in df.groupby(["patient_id", "scalp_region"], sort=False):
-        grp = grp.sort_values("session_no").copy()
-        for metric in METRICS:
-            vals = grp[metric].values
-            n    = len(vals)
-            means = np.full(n, np.nan)
-            stds  = np.full(n, np.nan)
-            zs    = np.full(n, np.nan)
-            flags = np.zeros(n, dtype=bool)
-            for i in range(1, n):
-                if i < MIN_SESSIONS_BASELINE:
-                    continue
-                past     = vals[:i]
-                m        = past.mean()
-                s        = past.std(ddof=1) if len(past) > 1 else 0.0
-                means[i] = round(m, 2)
-                stds[i]  = round(s, 2)
-                if s > 0:
-                    zs[i]    = round((vals[i] - m) / s, 3)
-                    flags[i] = abs(zs[i]) > threshold
-            grp[f"{metric}_baseline_mean"] = means
-            grp[f"{metric}_baseline_std"]  = stds
-            grp[f"{metric}_z"]             = zs
-            grp[f"{metric}_is_outlier"]    = flags
-        result_frames.append(grp)
-    return pd.concat(result_frames).sort_index()
-
-
 # ─── Rolling Baseline Red Flag Tespiti ───────────────────────────────────────
 
 def detect_red_flags(
@@ -165,9 +124,10 @@ def detect_red_flags(
     pt = patient_thresholds or {}
     result_frames = []
 
+    # Her hasta × bölge ikilisi ayrı bir zaman serisi gibi ele alınır
     for (pid, region), grp in df.groupby(["patient_id", "scalp_region"], sort=False):
         grp      = grp.sort_values("session_no").copy()
-        threshold = pt.get(pid, default_drop_pct)
+        threshold = pt.get(pid, default_drop_pct)  # hastaya özel eşik varsa onu kullan
 
         for metric in METRICS:
             vals = grp[metric].values
@@ -181,12 +141,16 @@ def detect_red_flags(
             for i in range(1, n):
                 if i < MIN_SESSIONS_BASELINE:
                     continue
+                # past = seans 0..i-1 (TÜMÜ) — sabit boyutlu pencere değil,
+                # her yeni seansla birlikte büyüyen (expanding) bir baseline
                 past     = vals[:i]
                 m        = past.mean()
                 s        = past.std(ddof=1) if len(past) > 1 else 0.0
                 means[i] = round(m, 2)
-                stds[i]  = round(s, 2)
+                stds[i]  = round(s, 2)  # not: std hesaplanıyor ama flag kararında kullanılmıyor, sadece raporlama için
                 if m > 0:
+                    # düşüş yüzdesi: değer baseline'ın ÜSTÜNDEYSE dp negatif olur → asla flag olmaz
+                    # yani sadece kötüleşme (düşüş) yakalanır, iyileşme hiç işaretlenmez
                     dp           = (m - vals[i]) / m * 100
                     drop_pcts[i] = round(dp, 2)
                     flags[i]     = dp > threshold

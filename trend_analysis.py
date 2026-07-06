@@ -10,8 +10,6 @@ import pandas as pd
 from scipy.stats import linregress
 
 
-MIN_SESSIONS_TREND = 3
-
 TREND_METRICS = {
     "hair_density_hairs_per_cm2": "Saç Yoğunluğu (hair/cm²)",
     "hair_thickness_um":          "Saç Kalınlığı (µm)",
@@ -23,87 +21,12 @@ TREND_REQUIRED_COLUMNS = {
 } | set(TREND_METRICS.keys())
 
 
-def analyze_trend(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Her (patient_id, scalp_region, metric) kombinasyonu için linear regression uygular.
-
-    Returns:
-        Her kombinasyon için bir satır içeren DataFrame.
-        Yetersiz veri durumunda (< MIN_SESSIONS_TREND) direction="insufficient_data".
-    """
-    rows = []
-
-    for (pid, region), grp in df.groupby(["patient_id", "scalp_region"], sort=False):
-        grp  = grp.sort_values("session_no").copy()
-        name = f"{grp.iloc[0]['first_name']} {grp.iloc[0]['last_name']}"
-
-        for metric in TREND_METRICS:
-            if metric not in grp.columns:
-                continue
-
-            vals = grp[metric].dropna().values.astype(float)
-            n    = len(vals)
-
-            base = {
-                "patient_id":    pid,
-                "patient_name":  name,
-                "scalp_region":  region,
-                "metric":        metric,
-                "session_count": n,
-            }
-
-            if n < MIN_SESSIONS_TREND:
-                rows.append({
-                    **base,
-                    "slope":          None,
-                    "slope_pct":      None,
-                    "r_squared":      None,
-                    "p_value":        None,
-                    "is_significant": False,
-                    "direction":      "insufficient_data",
-                    "first_value":    round(float(vals[0]), 2) if n > 0 else None,
-                    "last_value":     round(float(vals[-1]), 2) if n > 0 else None,
-                    "predicted_next": None,
-                })
-                continue
-
-            x   = np.arange(n, dtype=float)
-            lr  = linregress(x, vals)
-
-            slope  = lr.slope
-            r_sq   = lr.rvalue ** 2
-            p_val  = lr.pvalue
-            is_sig = bool(p_val < 0.05)
-            fv     = float(vals[0])
-            lv     = float(vals[-1])
-            pred   = float(lr.intercept + slope * n)
-            s_pct  = round((slope * n / fv) * 100, 2) if fv != 0 else None
-
-            if not is_sig:
-                direction = "stable"
-            elif slope > 0:
-                direction = "increasing"
-            else:
-                direction = "decreasing"
-
-            rows.append({
-                **base,
-                "slope":          round(float(slope), 4),
-                "slope_pct":      s_pct,
-                "r_squared":      round(float(r_sq), 4),
-                "p_value":        round(float(p_val), 6),
-                "is_significant": is_sig,
-                "direction":      direction,
-                "first_value":    round(fv, 2),
-                "last_value":     round(lv, 2),
-                "predicted_next": round(pred, 2),
-            })
-
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
-
-
 # ─── Biological CSV constants ──────────────────────────────────────────────────
-
+# DİKKAT: Bu sütun seti, ana veri dosyası patient_session_analysis.csv'den FARKLI
+# bir şema — "region" (scalp_region değil), "hair_density_hairs_cm2"
+# (hair_density_hairs_per_cm2 değil) ve "hair_type" (ana CSV'de yok).
+# /trend endpoint'lerinin çalışması için mock_patient_session_analysis_biological.csv
+# gibi bu şemaya uygun bir dosya gerekiyor; ana CSV verilirse 422 hatası alınır.
 BIO_REQUIRED_COLUMNS = {
     "patient_id", "first_name", "last_name",
     "session_date", "region",
@@ -162,7 +85,8 @@ def analyze_region_trend(
             results.append(_base)
             continue
 
-        # Linear regression on density
+        # Linear regression on density — sadece bilgi amaçlı response'a eklenir,
+        # direction kararına KATILMAZ (direction tamamen aşağıdaki delta'dan gelir)
         x = np.arange(n, dtype=float)
         lr = linregress(x, density)
         slope = float(lr.slope)
@@ -173,7 +97,7 @@ def analyze_region_trend(
         pred = float(lr.intercept + slope * n)
         s_pct = round((slope * n / fv) * 100, 2) if fv != 0 else None
 
-        # Last-vs-previous session delta
+        # Last-vs-previous session delta — direction burada belirleniyor (son 2 seans farkı)
         d_delta = round(float(density[-1]) - float(density[-2]), 2)
         prev_d = float(density[-2])
         d_delta_pct = round(d_delta / prev_d * 100, 2) if prev_d != 0 else 0.0
@@ -246,6 +170,8 @@ def analyze_patient_trend(
     intermediate_pct = round((latest["hair_type"] == "Intermediate").sum() / total * 100, 2) if total else 0.0
     vellus_pct = round((latest["hair_type"] == "Vellus").sum() / total * 100, 2) if total else 0.0
 
+    # Oy sayımı: kaç bölge artıyor vs kaç bölge azalıyor — büyüklük (kaç % değiştiği)
+    # önemli değil, sadece bölge SAYISI sayılıyor (ağırlıklandırma yok)
     inc = sum(1 for r in regions if r["direction"] == "Increasing")
     dec = sum(1 for r in regions if r["direction"] == "Decreasing")
 
