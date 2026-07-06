@@ -66,7 +66,7 @@ def _analyze(df: pd.DataFrame, pid: str, threshold: float) -> pd.DataFrame:
             for i in range(1, n):
                 if i < MIN_SESSIONS:
                     continue
-                past   = vals[:i]
+                past   = vals[:i][~fgs[:i]]
                 m      = past.mean()
                 s      = past.std(ddof=1) if len(past) > 1 else 0.0
                 bms[i] = round(m, 2)
