@@ -9,22 +9,20 @@ Ortam değişkeni:
 """
 
 import io
-import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from scalp_analysis import (
-    DEFAULT_DROP_PCT,
+    ANOMALY_THRESHOLD,
+    ANOMALY_WINDOW,
     METRICS,
-    MIN_SESSIONS_BASELINE,
     REQUIRED_COLUMNS,
-    detect_red_flags,
+    detect_anomalies,
 )
 from trend_analysis import (
     BIO_REQUIRED_COLUMNS,
@@ -37,13 +35,13 @@ from trend_analysis import (
 app = FastAPI(
     title="Scalp Analysis API",
     description=(
-        "Saç ve Kafa Derisi Red Flag Tespit Servisi\n\n"
-        "**Yöntem:** Her hasta × bölge kombinasyonu için kişi bazlı rolling baseline "
-        "(geçmiş seansların ortalaması). Mevcut seans değeri baseline ortalamasından "
-        "belirtilen yüzde kadar düşükse red flag olarak işaretlenir.\n\n"
-        "Her hasta için farklı eşik tanımlanabilir."
+        "Saç ve Kafa Derisi Anomali Tespit Servisi\n\n"
+        "**Yöntem:** Her hasta × bölge kombinasyonu için sabit boyutlu (rolling) "
+        "bir pencere (son N seans) baseline olarak kullanılır. Mevcut seans "
+        "değeri bu baseline'dan ±threshold std'den fazla sapıyorsa anomali "
+        "olarak işaretlenir (hem artış hem düşüş)."
     ),
-    version="2.0.0",
+    version="3.0.0",
 )
 
 _DEFAULT_DATA_FILE = os.getenv("SCALP_DATA_FILE", "")
@@ -51,7 +49,7 @@ _DEFAULT_DATA_FILE = os.getenv("SCALP_DATA_FILE", "")
 
 # ─── Schemas ──────────────────────────────────────────────────────────────────
 
-class RedFlagRecord(BaseModel):
+class AnomalyRecord(BaseModel):
     patient_id:    str
     patient_name:  str
     session_no:    int
@@ -60,23 +58,24 @@ class RedFlagRecord(BaseModel):
     value:         float
     baseline_mean: float
     baseline_std:  float
-    drop_pct:      float
-    threshold_pct: float
+    z_score:       float
+    direction:     str
 
 
 class AnalysisSummary(BaseModel):
     total_records:   int
     total_patients:  int
     total_sessions:  int
-    total_red_flags: int
+    total_anomalies: int
 
 
 class AnalyzeResponse(BaseModel):
-    generated_at:  str
-    method:        str
-    default_drop_pct: float
-    summary:       AnalysisSummary
-    red_flags:     list[RedFlagRecord]
+    generated_at: str
+    method:       str
+    window:       int
+    threshold:    float
+    summary:      AnalysisSummary
+    anomalies:    list[AnomalyRecord]
 
 
 # ─── Dashboard DTOs ────────────────────────────────────────────────────────────
@@ -132,9 +131,13 @@ class ClinicTrendResponse(BaseModel):
 
 # ─── Internal Helpers ─────────────────────────────────────────────────────────
 
-_DROP_PCT_QUERY = Query(
-    default=DEFAULT_DROP_PCT, ge=0.1, le=100.0,
-    description=f"Varsayılan düşüş eşiği % cinsinden (varsayılan: {DEFAULT_DROP_PCT})",
+_WINDOW_QUERY = Query(
+    default=ANOMALY_WINDOW, ge=2, le=30,
+    description=f"Baseline penceresi, seans sayısı (varsayılan: {ANOMALY_WINDOW})",
+)
+_THRESHOLD_QUERY = Query(
+    default=ANOMALY_THRESHOLD, ge=0.1, le=10.0,
+    description=f"Z-score eşiği, ± std (varsayılan: {ANOMALY_THRESHOLD})",
 )
 
 
@@ -178,55 +181,53 @@ def _json_records_to_df(records: list) -> pd.DataFrame:
         raise HTTPException(status_code=400, detail=f"JSON dönüştürme hatası: {exc}") from exc
 
 
-def _extract_red_flags(df: pd.DataFrame, patient_thresholds: dict[str, float], default_drop_pct: float) -> list[dict]:
-    pt    = patient_thresholds or {}
+def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
     found = []
     for metric in METRICS:
-        col = f"{metric}_is_red_flag"
+        col = f"{metric}_is_anomaly"
         if col not in df.columns:
             continue
         for _, row in df[df[col]].iterrows():
-            val = float(row[metric])
-            bm  = float(row[f"{metric}_baseline_mean"])
-            pid = row["patient_id"]
             found.append({
-                "patient_id":    pid,
+                "patient_id":    row["patient_id"],
                 "patient_name":  f"{row['first_name']} {row['last_name']}",
                 "session_no":    int(row["session_no"]),
                 "region":        row["region"],
                 "metric":        metric,
-                "value":         val,
-                "baseline_mean": bm,
+                "value":         float(row[metric]),
+                "baseline_mean": float(row[f"{metric}_baseline_mean"]),
                 "baseline_std":  float(row[f"{metric}_baseline_std"]),
-                "drop_pct":      float(row[f"{metric}_drop_pct"]),
-                "threshold_pct": pt.get(pid, default_drop_pct),
+                "z_score":       float(row[f"{metric}_z"]),
+                "direction":     row[f"{metric}_direction"],
             })
     return found
 
 
 def _build_response(
     df: pd.DataFrame,
-    red_flags: list[dict],
-    default_drop_pct: float,
+    anomalies: list[dict],
+    window: int,
+    threshold: float,
 ) -> AnalyzeResponse:
     return AnalyzeResponse(
         generated_at=datetime.now(timezone.utc).isoformat(),
-        method=f"rolling_baseline_drop_pct_threshold_{default_drop_pct}",
-        default_drop_pct=default_drop_pct,
+        method=f"rolling_zscore_window_{window}_threshold_{threshold}",
+        window=window,
+        threshold=threshold,
         summary=AnalysisSummary(
             total_records=int(len(df)),
             total_patients=int(df["patient_id"].nunique()),
             total_sessions=int(len(df[["patient_id", "session_no"]].drop_duplicates())),
-            total_red_flags=len(red_flags),
+            total_anomalies=len(anomalies),
         ),
-        red_flags=[RedFlagRecord(**r) for r in red_flags],
+        anomalies=[AnomalyRecord(**a) for a in anomalies],
     )
 
 
 def _run_analysis(
     df: pd.DataFrame,
-    default_drop_pct: float,
-    patient_thresholds: dict[str, float] | None = None,
+    window: int,
+    threshold: float,
     patient_id: str | None = None,
 ) -> AnalyzeResponse:
     _validate_df(df)
@@ -239,9 +240,9 @@ def _run_analysis(
                 detail=f"patient_id bulunamadı: {patient_id}",
             )
 
-    df        = detect_red_flags(df, default_drop_pct, patient_thresholds)
-    red_flags = _extract_red_flags(df, patient_thresholds or {}, default_drop_pct)
-    return _build_response(df, red_flags, default_drop_pct)
+    df        = detect_anomalies(df, window, threshold)
+    anomalies = _extract_anomalies(df)
+    return _build_response(df, anomalies, window, threshold)
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -258,7 +259,7 @@ def _to_patient_trend_response(data: dict) -> PatientTrendResponse:
 
 @app.get("/health", tags=["meta"], summary="Servis sağlık kontrolü")
 async def health() -> dict:
-    return {"status": "ok", "service": "scalp-analysis-api", "version": "2.0.0"}
+    return {"status": "ok", "service": "scalp-analysis-api", "version": "3.0.0"}
 
 
 @app.post(
@@ -269,35 +270,29 @@ async def health() -> dict:
 )
 async def analyze(
     request: Request,
-    drop_pct: float = _DROP_PCT_QUERY,
+    window:    int   = _WINDOW_QUERY,
+    threshold: float = _THRESHOLD_QUERY,
 ) -> AnalyzeResponse:
     """
     İki içerik türü desteklenir:
 
     **CSV yükleme** (`multipart/form-data`):
     - `file` alanı: CSV dosyası
-    - `thresholds` alanı (opsiyonel): JSON string, `{"patient_uuid": drop_pct, ...}`
 
     ```
-    curl -X POST "http://localhost:8000/analyze?drop_pct=10.0" \\
-         -F "file=@data.csv" \\
-         -F 'thresholds={"uuid1": 15.0}'
+    curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0" \\
+         -F "file=@data.csv"
     ```
 
     **JSON body** (`application/json`):
     ```json
-    {
-      "records": [{...}, {...}],
-      "thresholds": {"patient_uuid": 12.0},
-      "default_drop_pct": 10.0
-    }
+    { "records": [{...}, {...}] }
     ```
 
-    Her red flag için `patient_id`, `session_no`, `region`, `metric`,
-    `value`, `baseline_mean`, `baseline_std`, `drop_pct`, `threshold_pct` döner.
+    Her anomali için `patient_id`, `session_no`, `region`, `metric`,
+    `value`, `baseline_mean`, `baseline_std`, `z_score`, `direction` döner.
     """
-    content_type       = request.headers.get("content-type", "")
-    patient_thresholds = None
+    content_type = request.headers.get("content-type", "")
 
     if "multipart/form-data" in content_type:
         form     = await request.form()
@@ -305,13 +300,6 @@ async def analyze(
         if uploaded is None:
             raise HTTPException(status_code=400, detail="`file` form alanı eksik")
         df = _csv_to_df(await uploaded.read())
-
-        raw_thresholds = form.get("thresholds")
-        if raw_thresholds:
-            try:
-                patient_thresholds = json.loads(raw_thresholds)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(status_code=422, detail=f"thresholds geçersiz JSON: {exc}") from exc
 
     elif "application/json" in content_type:
         body = await request.json()
@@ -322,19 +310,9 @@ async def analyze(
             if not isinstance(records, list):
                 raise HTTPException(
                     status_code=422,
-                    detail='JSON body "records" listesi içermeli: {"records": [{...}], "thresholds": {...}}',
+                    detail='JSON body "records" listesi içermeli: {"records": [{...}]}',
                 )
-            df                 = _json_records_to_df(records)
-            patient_thresholds = body.get("thresholds") or None
-            if "default_drop_pct" in body:
-                raw = body["default_drop_pct"]
-                try:
-                    raw = float(raw)
-                except (TypeError, ValueError):
-                    raise HTTPException(status_code=422, detail="default_drop_pct sayısal olmalı")
-                if not (0.1 <= raw <= 100.0):
-                    raise HTTPException(status_code=422, detail="default_drop_pct 0.1–100.0 arasında olmalı")
-                drop_pct = raw
+            df = _json_records_to_df(records)
         else:
             raise HTTPException(
                 status_code=422,
@@ -350,7 +328,7 @@ async def analyze(
             ),
         )
 
-    return _run_analysis(df, drop_pct, patient_thresholds)
+    return _run_analysis(df, window, threshold)
 
 
 @app.get(
@@ -361,18 +339,17 @@ async def analyze(
 )
 async def analyze_patient(
     patient_id: str,
-    drop_pct:   float = _DROP_PCT_QUERY,
+    window:     int   = _WINDOW_QUERY,
+    threshold:  float = _THRESHOLD_QUERY,
 ) -> AnalyzeResponse:
     """
-    Belirli bir hasta için red flag analizi.
+    Belirli bir hasta için anomali analizi.
 
     Veri kaynağı: `SCALP_DATA_FILE` ortam değişkeni ile tanımlı CSV dosyası.
 
-    Per-hasta eşik tanımlamak için POST `/analyze` endpoint'ini kullanın.
-
     ```
     SCALP_DATA_FILE=data.csv uvicorn api:app --reload
-    curl "http://localhost:8000/analyze/PATIENT-UUID?drop_pct=8.0"
+    curl "http://localhost:8000/analyze/PATIENT-UUID?window=3&threshold=2.0"
     ```
     """
     if not _DEFAULT_DATA_FILE:
@@ -386,7 +363,7 @@ async def analyze_patient(
         raise HTTPException(status_code=404, detail=f"Veri dosyası bulunamadı: {_DEFAULT_DATA_FILE}")
 
     df = _csv_to_df(path.read_bytes())
-    return _run_analysis(df, drop_pct, patient_id=patient_id)
+    return _run_analysis(df, window, threshold, patient_id=patient_id)
 
 
 @app.get(

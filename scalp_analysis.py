@@ -1,23 +1,28 @@
 """
-Scalp & Hair Density Analysis – Red Flag Detection Service | Patient Session Analysis
+Scalp & Hair Density Analysis – Rolling Z-Score Anomaly Detection | Patient Session Analysis
 
 Yöntem:
-    Her hasta × bölge kombinasyonu için mevcut seansa kadar olan
-    GEÇMİŞ seansların ortalaması hesaplanır (rolling baseline).
-    Mevcut seans değeri baseline ortalamasından DROP_PCT% altındaysa RED FLAG.
+    Her hasta × bölge kombinasyonu için SABİT BOYUTLU bir pencere
+    (son ANOMALY_WINDOW seans, mevcut seans hariç) baseline olarak kullanılır.
+    z = (mevcut_değer - pencere_ortalaması) / pencere_std
+    |z| > ANOMALY_THRESHOLD ise anomali (hem artış hem düşüş yakalanır).
 
-    Az veri (< MIN_SESSIONS_FOR_BASELINE) varsa analiz yapılmaz,
-    uyarı verilir.
+    Tüm geçmişi kullanan (expanding) bir pencere yerine sabit pencere
+    tercih edildi: expanding pencerede bir outlier baseline'a girip
+    std'yi şişirebiliyor (sonraki gerçek anomalileri gizliyor) ya da
+    outlier'lar baseline'dan hariç tutulursa bu sefer baseline donup
+    kalıyor (sürekli trend değişikliklerinde sonsuz alarm). Sabit
+    pencere, eski seansları zamanla kendiliğinden düşürerek ikisini
+    de önler.
 
-    Her hasta için farklı eşik tanımlanabilir; tanımlanmayan hastalarda
-    --drop-pct değeri kullanılır.
+    Toplam seans sayısı ANOMALY_WINDOW'dan azsa analiz yapılmaz,
+    "insufficient_data" döner.
 
 Kullanım:
     python scalp_analysis.py --input data.csv
     python scalp_analysis.py --input data.csv --output report.json
-    python scalp_analysis.py --input data.csv --drop-pct 10.0
+    python scalp_analysis.py --input data.csv --window 3 --threshold 2.0
     python scalp_analysis.py --input data.csv --patient-id <uuid>
-    python scalp_analysis.py --input data.csv --patient-thresholds '{"uuid1": 15.0}'
 """
 
 import argparse
@@ -32,8 +37,8 @@ import pandas as pd
 
 # ─── Sabitler ────────────────────────────────────────────────────────────────
 
-DEFAULT_DROP_PCT      = 10.0  # baseline'dan yüzde kaç düşüş → red flag
-MIN_SESSIONS_BASELINE = 1     # baseline için gereken min geçmiş seans sayısı
+ANOMALY_WINDOW    = 3     # rolling baseline penceresi (son N seans, mevcut haric)
+ANOMALY_THRESHOLD = 2.0   # +/- std esigi
 
 
 # ─── ANSI Renk Kodları ───────────────────────────────────────────────────────
@@ -50,7 +55,7 @@ class C:
 
 
 def red_flash(msg: str) -> str:
-    return f"{C.BG_RED}{C.BOLD}{C.WHITE} ⚑ RED FLAG  {msg} {C.RESET}"
+    return f"{C.BG_RED}{C.BOLD}{C.WHITE} ⚑ ANOMALİ  {msg} {C.RESET}"
 
 
 def warn(msg: str) -> str:
@@ -104,64 +109,72 @@ def load_data(filepath: str, patient_id: str | None = None) -> pd.DataFrame:
     return df
 
 
-# ─── Rolling Baseline Red Flag Tespiti ───────────────────────────────────────
+# ─── Rolling (Sabit Pencere) Z-Score Anomali Tespiti ─────────────────────────
 
-def detect_red_flags(
+def detect_anomalies(
     df: pd.DataFrame,
-    default_drop_pct: float,
-    patient_thresholds: dict[str, float] | None = None,
+    window: int = ANOMALY_WINDOW,
+    threshold: float = ANOMALY_THRESHOLD,
 ) -> pd.DataFrame:
     """
     Her (patient_id, region, metric) grubu için:
-      - Seans N için baseline = seans 1..N-1 ortalaması
-      - drop_pct = (baseline_mean - değer) / baseline_mean × 100
-      - drop_pct > hasta_eşiği → RED FLAG  (sadece düşüş)
+      - baseline = mevcut seanstan önceki en fazla `window` seansın ort./std'si
+        (sabit boyutlu pencere — tüm geçmiş değil)
+      - z = (değer - baseline_mean) / baseline_std
+      - |z| > threshold → ANOMALİ (hem artış hem düşüş yakalanır)
 
-    patient_thresholds: {patient_id: drop_pct_eşiği}
-    Tanımlanmayan hastalarda default_drop_pct kullanılır.
+    Toplam seans sayısı `window`'dan az olan (patient_id, region) grupları
+    için tüm satırlarda direction="insufficient_data" döner.
 
     Dönen DataFrame: orijinal tüm satırlar +
         {metric}_baseline_mean, {metric}_baseline_std,
-        {metric}_drop_pct, {metric}_is_red_flag  sütunları eklenerek.
+        {metric}_z, {metric}_is_anomaly, {metric}_direction  sütunları eklenerek.
+        direction: "high" / "low" / "insufficient_data" / None
     """
-    pt = patient_thresholds or {}
     result_frames = []
 
-    # Her hasta × bölge ikilisi ayrı bir zaman serisi gibi ele alınır
     for (pid, region), grp in df.groupby(["patient_id", "region"], sort=False):
-        grp      = grp.sort_values("session_no").copy()
-        threshold = pt.get(pid, default_drop_pct)  # hastaya özel eşik varsa onu kullan
+        grp = grp.sort_values("session_no").copy()
+        n   = len(grp)
 
         for metric in METRICS:
-            vals = grp[metric].values
-            n    = len(vals)
+            vals       = grp[metric].values.astype(float)
+            means      = np.full(n, np.nan)
+            stds       = np.full(n, np.nan)
+            zs         = np.full(n, np.nan)
+            anomalies  = np.zeros(n, dtype=bool)
+            directions = np.full(n, None, dtype=object)
 
-            means     = np.full(n, np.nan)
-            stds      = np.full(n, np.nan)
-            drop_pcts = np.full(n, np.nan)
-            flags     = np.zeros(n, dtype=bool)
-
-            for i in range(1, n):
-                if i < MIN_SESSIONS_BASELINE:
-                    continue
-                # past = seans 0..i-1 (TÜMÜ) — sabit boyutlu pencere değil,
-                # her yeni seansla birlikte büyüyen (expanding) bir baseline
-                past     = vals[:i]
-                m        = past.mean()
-                s        = past.std(ddof=1) if len(past) > 1 else 0.0
-                means[i] = round(m, 2)
-                stds[i]  = round(s, 2)  # not: std hesaplanıyor ama flag kararında kullanılmıyor, sadece raporlama için
-                if m > 0:
-                    # düşüş yüzdesi: değer baseline'ın ÜSTÜNDEYSE dp negatif olur → asla flag olmaz
-                    # yani sadece kötüleşme (düşüş) yakalanır, iyileşme hiç işaretlenmez
-                    dp           = (m - vals[i]) / m * 100
-                    drop_pcts[i] = round(dp, 2)
-                    flags[i]     = dp > threshold
+            if n < window:
+                directions[:] = "insufficient_data"
+            else:
+                for i in range(1, n):
+                    # sabit boyutlu pencere: son `window` seans, mevcut haric
+                    window_vals = vals[max(0, i - window):i]
+                    if len(window_vals) < 2:
+                        continue
+                    m = window_vals.mean()
+                    s = window_vals.std(ddof=1)
+                    means[i] = round(m, 2)
+                    stds[i]  = round(s, 2)
+                    if s > 0:
+                        z = (vals[i] - m) / s
+                        zs[i] = round(z, 3)
+                        if z > threshold:
+                            anomalies[i], directions[i] = True, "high"
+                        elif z < -threshold:
+                            anomalies[i], directions[i] = True, "low"
+                    elif vals[i] != m:
+                        # pencere birebir ayni (std=0) -> z tanimsiz,
+                        # ama sabit degerden herhangi bir sapma zaten anormal
+                        anomalies[i]  = True
+                        directions[i] = "high" if vals[i] > m else "low"
 
             grp[f"{metric}_baseline_mean"] = means
             grp[f"{metric}_baseline_std"]  = stds
-            grp[f"{metric}_drop_pct"]      = drop_pcts
-            grp[f"{metric}_is_red_flag"]   = flags
+            grp[f"{metric}_z"]             = zs
+            grp[f"{metric}_is_anomaly"]    = anomalies
+            grp[f"{metric}_direction"]     = directions
 
         result_frames.append(grp)
 
@@ -184,36 +197,37 @@ def print_summary(df: pd.DataFrame) -> None:
               f"Min: {s.min()}  Max: {s.max()}")
 
 
-def print_red_flags(
+def print_anomalies(
     df: pd.DataFrame,
-    default_drop_pct: float,
-    patient_thresholds: dict[str, float] | None = None,
+    window: int,
+    threshold: float,
 ) -> list[dict]:
-    pt = patient_thresholds or {}
-    section(f"RED FLAG TESPİTLERİ  (varsayılan eşik: >{default_drop_pct}% düşüş, kişi bazlı rolling baseline)")
+    section(f"ANOMALİ TESPİTLERİ  (pencere: son {window} seans, eşik: ±{threshold} std)")
 
     found = []
 
     for metric, label in METRICS.items():
-        col = f"{metric}_is_red_flag"
+        col = f"{metric}_is_anomaly"
         if col not in df.columns:
             continue
-        red_flags = df[df[col] == True]
+        anomalies = df[df[col] == True]
 
-        for _, row in red_flags.iterrows():
-            dp  = row[f"{metric}_drop_pct"]
-            bm  = row[f"{metric}_baseline_mean"]
-            val = row[metric]
-            sno = int(row["session_no"])
-            pid = row["patient_id"]
-            threshold = pt.get(pid, default_drop_pct)
+        for _, row in anomalies.iterrows():
+            z     = row[f"{metric}_z"]
+            bm    = row[f"{metric}_baseline_mean"]
+            bs    = row[f"{metric}_baseline_std"]
+            val   = row[metric]
+            sno   = int(row["session_no"])
+            pid   = row["patient_id"]
+            direction = row[f"{metric}_direction"]
+            arrow = "↑" if direction == "high" else "↓"
 
             line = (
                 f"{row['first_name']} {row['last_name']} | "
                 f"Bölge: {row['region']:12s} | "
                 f"Seans: {sno} | "
                 f"{label}: {val}  "
-                f"(baseline: {bm}, düşüş: %{dp:.1f}, eşik: %{threshold})"
+                f"(baseline: {bm}, z: {arrow}{abs(z):.2f}, eşik: ±{threshold})"
             )
             print(red_flash(line))
             found.append({
@@ -224,30 +238,27 @@ def print_red_flags(
                 "metric":        metric,
                 "value":         val,
                 "baseline_mean": bm,
-                "baseline_std":  row[f"{metric}_baseline_std"],
-                "drop_pct":      dp,
-                "threshold_pct": threshold,
+                "baseline_std":  bs,
+                "z_score":       z,
+                "direction":     direction,
             })
 
     if not found:
-        print(f"  {C.GREEN}✓ Hiç red flag bulunamadı.{C.RESET}")
+        print(f"  {C.GREEN}✓ Hiç anomali bulunamadı.{C.RESET}")
 
     skipped = []
     for metric in METRICS:
-        col = f"{metric}_baseline_mean"
+        col = f"{metric}_direction"
         if col not in df.columns:
             continue
-        mask = (
-            (df["session_no"] > df.groupby(["patient_id", "region"])["session_no"].transform("min"))
-            & df[col].isna()
-        )
+        mask = df[col] == "insufficient_data"
         if mask.any():
             for _, row in df[mask].drop_duplicates(["patient_id", "region"]).iterrows():
                 skipped.append(f"{row['first_name']} {row['last_name']} – {row['region']}")
 
     if skipped:
         print()
-        print(warn(f"Yeterli geçmiş seans yok (min {MIN_SESSIONS_BASELINE}), atlandı:"))
+        print(warn(f"Yeterli seans yok (min {window}), atlandı:"))
         for s in set(skipped):
             print(f"    • {s}")
 
@@ -255,7 +266,7 @@ def print_red_flags(
 
 
 def print_trend(df: pd.DataFrame) -> None:
-    section("KİŞİ BAZLI TREND (son seans vs önceki ortalama)")
+    section("KİŞİ BAZLI DURUM (son seans)")
 
     for pid, pgrp in df.groupby("patient_id"):
         name = f"{pgrp.iloc[0]['first_name']} {pgrp.iloc[0]['last_name']}"
@@ -266,19 +277,17 @@ def print_trend(df: pd.DataFrame) -> None:
         for _, row in last.sort_values("region").iterrows():
             for metric, label in METRICS.items():
                 bm  = row.get(f"{metric}_baseline_mean", np.nan)
-                dp  = row.get(f"{metric}_drop_pct", np.nan)
+                z   = row.get(f"{metric}_z", np.nan)
                 val = row[metric]
-                if np.isnan(bm):
+                direction = row.get(f"{metric}_direction")
+                if direction == "insufficient_data" or pd.isna(bm):
                     status = f"{C.YELLOW}baseline yok{C.RESET}"
+                elif direction == "high":
+                    status = f"{C.RED}↑ z={z:.2f} ANOMALİ{C.RESET}"
+                elif direction == "low":
+                    status = f"{C.RED}↓ z={z:.2f} ANOMALİ{C.RESET}"
                 else:
-                    is_rf = row.get(f"{metric}_is_red_flag", False)
-                    if is_rf:
-                        status = f"{C.RED}↓ -%{dp:.1f} RED FLAG{C.RESET}"
-                    elif not np.isnan(dp) and dp > 0:
-                        status = f"{C.YELLOW}↓ -%{dp:.1f}{C.RESET}"
-                    else:
-                        arrow  = "↑" if (not np.isnan(dp) and dp < 0) else "→"
-                        status = f"{C.GREEN}{arrow} {val - bm:+.1f}{C.RESET}"
+                    status = f"{C.GREEN}→ {val - bm:+.1f}{C.RESET}"
                 print(f"    {row['region']:12s}  {label}: {val:>4}  {status}")
 
 
@@ -286,7 +295,7 @@ def print_trend(df: pd.DataFrame) -> None:
 
 def save_json(
     df: pd.DataFrame,
-    red_flags: list[dict],
+    anomalies: list[dict],
     method_desc: str,
     path: str,
 ) -> None:
@@ -297,9 +306,9 @@ def save_json(
             "total_records":   len(df),
             "total_patients":  int(df["patient_id"].nunique()),
             "total_sessions":  int(len(df[["patient_id", "session_no"]].drop_duplicates())),
-            "total_red_flags": len(red_flags),
+            "total_anomalies": len(anomalies),
         },
-        "red_flags": red_flags,
+        "anomalies": anomalies,
     }
     Path(path).write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(f"\n  {C.GREEN}✓ JSON rapor kaydedildi: {path}{C.RESET}")
@@ -308,49 +317,41 @@ def save_json(
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Scalp Analysis – Red Flag Detection")
-    parser.add_argument("--input",              required=True)
-    parser.add_argument("--output",             default=None, help="JSON çıktı dosyası")
-    parser.add_argument("--drop-pct",           type=float, default=DEFAULT_DROP_PCT,
-                        help=f"Baseline'dan yüzde düşüş eşiği (varsayılan: {DEFAULT_DROP_PCT})")
-    parser.add_argument("--patient-thresholds", default=None,
-                        help='Per-hasta eşikler JSON: \'{"uuid1": 15.0, "uuid2": 8.0}\'')
-    parser.add_argument("--patient-id",         default=None, help="Tek hasta filtrele")
+    parser = argparse.ArgumentParser(description="Scalp Analysis – Rolling Z-Score Anomali Tespiti")
+    parser.add_argument("--input",     required=True)
+    parser.add_argument("--output",    default=None, help="JSON çıktı dosyası")
+    parser.add_argument("--window",    type=int, default=ANOMALY_WINDOW,
+                        help=f"Baseline penceresi, seans sayısı (varsayılan: {ANOMALY_WINDOW})")
+    parser.add_argument("--threshold", type=float, default=ANOMALY_THRESHOLD,
+                        help=f"Z-score eşiği, ± std (varsayılan: {ANOMALY_THRESHOLD})")
+    parser.add_argument("--patient-id", default=None, help="Tek hasta filtrele")
     args = parser.parse_args()
-
-    patient_thresholds = None
-    if args.patient_thresholds:
-        try:
-            patient_thresholds = json.loads(args.patient_thresholds)
-        except json.JSONDecodeError as e:
-            print(f"{C.RED}[HATA] --patient-thresholds geçersiz JSON: {e}{C.RESET}")
-            sys.exit(1)
 
     print(f"\n{C.BOLD}{C.CYAN}"
           f"──────────────────────────────────────────────────\n"
-          f"   Scalp Analysis – Red Flag Detection Service\n"
+          f"   Scalp Analysis – Rolling Z-Score Anomali Tespiti\n"
           f"   Heptapus Group\n"
           f"──────────────────────────────────────────────────"
           f"{C.RESET}")
 
-    df         = load_data(args.input, args.patient_id)
-    df         = detect_red_flags(df, args.drop_pct, patient_thresholds)
+    df        = load_data(args.input, args.patient_id)
+    df        = detect_anomalies(df, args.window, args.threshold)
 
     print_summary(df)
-    red_flags  = print_red_flags(df, args.drop_pct, patient_thresholds)
+    anomalies = print_anomalies(df, args.window, args.threshold)
     print_trend(df)
 
     section("ANALİZ TAMAMLANDI")
-    color = C.RED if red_flags else C.GREEN
-    print(f"  {color}{C.BOLD}Toplam red flag: {len(red_flags)}{C.RESET}")
-    print(f"  Varsayılan eşik: >%{args.drop_pct} düşüş  |  Yöntem: kişi bazlı rolling baseline\n")
+    color = C.RED if anomalies else C.GREEN
+    print(f"  {color}{C.BOLD}Toplam anomali: {len(anomalies)}{C.RESET}")
+    print(f"  Pencere: son {args.window} seans  |  Eşik: ±{args.threshold} std  |  Yöntem: rolling z-score\n")
 
     if args.output:
-        save_json(df, red_flags,
-                  f"rolling_baseline_drop_pct_threshold_{args.drop_pct}",
+        save_json(df, anomalies,
+                  f"rolling_zscore_window_{args.window}_threshold_{args.threshold}",
                   args.output)
 
-    return 1 if red_flags else 0
+    return 1 if anomalies else 0
 
 
 if __name__ == "__main__":

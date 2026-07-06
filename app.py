@@ -6,6 +6,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from scalp_analysis import ANOMALY_WINDOW, detect_anomalies
+
 st.set_page_config(
     page_title="Scalp Analysis Dashboard",
     layout="wide",
@@ -14,8 +16,7 @@ st.set_page_config(
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-PALETTE      = px.colors.qualitative.Plotly
-MIN_SESSIONS = 2
+PALETTE = px.colors.qualitative.Plotly
 
 METRICS = {
     "hair_density_hairs_cm2": "Hair Density (hair/cm²)",
@@ -52,38 +53,10 @@ def _load(file_bytes: bytes) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def _analyze(df: pd.DataFrame, pid: str, threshold: float) -> pd.DataFrame:
-    pat    = df[df["patient_id"] == pid].copy()
-    frames = []
-    for (_, region), grp in pat.groupby(["patient_id", "region"], sort=False):
-        grp = grp.sort_values("session_no").copy()
-        for metric in METRICS:
-            vals = grp[metric].values.astype(float)
-            n    = len(vals)
-            bms  = np.full(n, np.nan)
-            bss  = np.full(n, np.nan)
-            zs   = np.full(n, np.nan)
-            fgs  = np.zeros(n, dtype=bool)
-            for i in range(1, n):
-                if i < MIN_SESSIONS:
-                    continue
-                past   = vals[:i]
-                m      = past.mean()
-                s      = past.std(ddof=1) if len(past) > 1 else 0.0
-                bms[i] = round(m, 2)
-                bss[i] = round(s, 2)
-                if s > 0:
-                    zs[i]  = round((vals[i] - m) / s, 3)
-                    fgs[i] = bool(abs(zs[i]) > threshold)
-                elif vals[i] != m:
-                    # gecmis seanslar birebir ayni (std=0) -> z tanimsiz,
-                    # ama sabit degerden herhangi bir sapma zaten anormal
-                    fgs[i] = True
-            grp[f"{metric}_bm"]      = bms
-            grp[f"{metric}_bs"]      = bss
-            grp[f"{metric}_z"]       = zs
-            grp[f"{metric}_outlier"] = fgs
-        frames.append(grp)
-    return pd.concat(frames).sort_index() if frames else pat
+    pat = df[df["patient_id"] == pid].copy()
+    if pat.empty:
+        return pat
+    return detect_anomalies(pat, window=ANOMALY_WINDOW, threshold=threshold)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -131,17 +104,17 @@ with st.sidebar:
 
 df = _analyze(df_raw, selected_pid, threshold)
 
-# Session dates that have at least one outlier (any region, any metric)
+# Session dates that have at least one anomaly (any region, any metric)
 _omask = pd.Series(False, index=df.index)
 for _m in METRICS:
-    _c = f"{_m}_outlier"
+    _c = f"{_m}_is_anomaly"
     if _c in df.columns:
         _omask |= df[_c].astype(bool)
 outlier_sessions: set = set(df.loc[_omask, "session_date"].unique())
 
 outlier_count = int(sum(
-    df[f"{m}_outlier"].sum()
-    for m in METRICS if f"{m}_outlier" in df.columns
+    df[f"{m}_is_anomaly"].sum()
+    for m in METRICS if f"{m}_is_anomaly" in df.columns
 ))
 
 
@@ -182,10 +155,10 @@ def _render_chart(metric: str, label: str) -> None:
         st.warning("En az bir bölge seçin.")
         return
 
-    bm_col   = f"{metric}_bm"
-    bs_col   = f"{metric}_bs"
+    bm_col   = f"{metric}_baseline_mean"
+    bs_col   = f"{metric}_baseline_std"
     z_col    = f"{metric}_z"
-    flag_col = f"{metric}_outlier"
+    flag_col = f"{metric}_is_anomaly"
     fig      = go.Figure()
 
     for idx, region in enumerate(selected):
@@ -222,7 +195,7 @@ def _render_chart(metric: str, label: str) -> None:
                     showlegend=False, legendgroup=region, hoverinfo="skip",
                 ))
 
-        # Outlier markers
+        # Anomaly markers
         if flag_col in grp.columns:
             out = grp[grp[flag_col]]
             if not out.empty:
@@ -234,7 +207,7 @@ def _render_chart(metric: str, label: str) -> None:
                                 line=dict(width=2.5, color="darkred")),
                     showlegend=False, legendgroup=region,
                     hovertemplate=(
-                        f"<b>⚠ OUTLIER – {region}</b><br>"
+                        f"<b>⚠ ANOMALİ – {region}</b><br>"
                         "%{x|%d %b %Y}: %{y}<br>"
                         "z = %{customdata:.2f}<extra></extra>"
                     ),
@@ -306,20 +279,21 @@ with right_col:
         st.info("Bu veri setinde `hair_type` sütunu yok.")
 
 
-# ── Outlier detail table ───────────────────────────────────────────────────────
+# ── Anomali detay tablosu ───────────────────────────────────────────────────────
 
 st.divider()
-st.subheader("Outlier Detay Tablosu")
+st.subheader("Anomali Detay Tablosu")
 
 rows = []
 for metric, label in METRICS.items():
-    flag_col = f"{metric}_outlier"
+    flag_col = f"{metric}_is_anomaly"
     if flag_col not in df.columns:
         continue
     for _, row in df[df[flag_col]].iterrows():
-        z   = row.get(f"{metric}_z",  np.nan)
-        bm  = row.get(f"{metric}_bm", np.nan)
-        val = float(row[metric])
+        z         = row.get(f"{metric}_z", np.nan)
+        bm        = row.get(f"{metric}_baseline_mean", np.nan)
+        direction = row.get(f"{metric}_direction")
+        val       = float(row[metric])
         rows.append({
             "Hasta":         f"{row['first_name']} {row['last_name']}",
             "Bölge":         row["region"],
@@ -328,7 +302,7 @@ for metric, label in METRICS.items():
             "Değer":         val,
             "Baseline Mean": round(float(bm), 2) if pd.notna(bm) else "—",
             "Z-score":       round(float(z),  2) if pd.notna(z)  else "—",
-            "Yön":           "↑ Yüksek" if val > bm else "↓ Düşük",
+            "Yön":           "↑ Yüksek" if direction == "high" else "↓ Düşük",
         })
 
 if rows:
