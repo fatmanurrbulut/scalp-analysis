@@ -126,6 +126,12 @@ def detect_anomalies(
     Toplam seans sayısı `window`'dan az olan (patient_id, region) grupları
     için tüm satırlarda direction="insufficient_data" döner.
 
+    std=0 durumu (pencerede tüm değerler birebir aynı) ayrıca ele alınır:
+      - mevcut değer de aynıysa  -> değişim yok, z=0.0, anomali değil
+      - mevcut değer farklıysa   -> anomali kesin ama z-score tanımsız
+        (tek bir farklı noktadan istatistiksel sapma hesaplanamaz),
+        z=NaN kalır -> API'de z_score=None + low_confidence=True olarak yansır
+
     Dönen DataFrame: orijinal tüm satırlar +
         {metric}_baseline_mean, {metric}_baseline_std,
         {metric}_z, {metric}_is_anomaly, {metric}_direction  sütunları eklenerek.
@@ -164,9 +170,12 @@ def detect_anomalies(
                             anomalies[i], directions[i] = True, "high"
                         elif z < -threshold:
                             anomalies[i], directions[i] = True, "low"
-                    elif vals[i] != m:
-                        # pencere birebir ayni (std=0) -> z tanimsiz,
-                        # ama sabit degerden herhangi bir sapma zaten anormal
+                    elif vals[i] == m:
+                        # pencere birebir ayni (std=0) ve deger de ayni -> degisim yok
+                        zs[i] = 0.0
+                    else:
+                        # pencere birebir ayni (std=0) ama deger farkli ->
+                        # anomali kesin, ama z-score tanimsiz (dusuk guven)
                         anomalies[i]  = True
                         directions[i] = "high" if vals[i] > m else "low"
 
@@ -219,28 +228,31 @@ def print_anomalies(
             val   = row[metric]
             sno   = int(row["session_no"])
             pid   = row["patient_id"]
-            direction = row[f"{metric}_direction"]
-            arrow = "↑" if direction == "high" else "↓"
+            direction      = row[f"{metric}_direction"]
+            low_confidence = pd.isna(z)
+            arrow  = "↑" if direction == "high" else "↓"
+            z_desc = f"{arrow}{abs(z):.2f}" if not low_confidence else "düşük güven (pencere sabit, z tanımsız)"
 
             line = (
                 f"{row['first_name']} {row['last_name']} | "
                 f"Bölge: {row['region']:12s} | "
                 f"Seans: {sno} | "
                 f"{label}: {val}  "
-                f"(baseline: {bm}, z: {arrow}{abs(z):.2f}, eşik: ±{threshold})"
+                f"(baseline: {bm}, z: {z_desc}, eşik: ±{threshold})"
             )
             print(red_flash(line))
             found.append({
-                "patient_id":    pid,
-                "patient_name":  f"{row['first_name']} {row['last_name']}",
-                "session_no":    sno,
-                "region":        row["region"],
-                "metric":        metric,
-                "value":         val,
-                "baseline_mean": bm,
-                "baseline_std":  bs,
-                "z_score":       z,
-                "direction":     direction,
+                "patient_id":     pid,
+                "patient_name":   f"{row['first_name']} {row['last_name']}",
+                "session_no":     sno,
+                "region":         row["region"],
+                "metric":         metric,
+                "value":          val,
+                "baseline_mean":  bm,
+                "baseline_std":   bs,
+                "z_score":        None if low_confidence else z,
+                "direction":      direction,
+                "low_confidence": low_confidence,
             })
 
     if not found:
@@ -283,9 +295,11 @@ def print_trend(df: pd.DataFrame) -> None:
                 if direction == "insufficient_data" or pd.isna(bm):
                     status = f"{C.YELLOW}baseline yok{C.RESET}"
                 elif direction == "high":
-                    status = f"{C.RED}↑ z={z:.2f} ANOMALİ{C.RESET}"
+                    z_str = f"{z:.2f}" if pd.notna(z) else "düşük güven"
+                    status = f"{C.RED}↑ z={z_str} ANOMALİ{C.RESET}"
                 elif direction == "low":
-                    status = f"{C.RED}↓ z={z:.2f} ANOMALİ{C.RESET}"
+                    z_str = f"{z:.2f}" if pd.notna(z) else "düşük güven"
+                    status = f"{C.RED}↓ z={z_str} ANOMALİ{C.RESET}"
                 else:
                     status = f"{C.GREEN}→ {val - bm:+.1f}{C.RESET}"
                 print(f"    {row['region']:12s}  {label}: {val:>4}  {status}")

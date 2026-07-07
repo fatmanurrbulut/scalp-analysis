@@ -50,16 +50,17 @@ _DEFAULT_DATA_FILE = os.getenv("SCALP_DATA_FILE", "")
 # ─── Schemas ──────────────────────────────────────────────────────────────────
 
 class AnomalyRecord(BaseModel):
-    patient_id:    str
-    patient_name:  str
-    session_no:    int
-    region:        str
-    metric:        str
-    value:         float
-    baseline_mean: float
-    baseline_std:  float
-    z_score:       float | None
-    direction:     str
+    patient_id:     str
+    patient_name:   str
+    session_no:     int
+    region:         str
+    metric:         str
+    value:          float
+    baseline_mean:  float
+    baseline_std:   float
+    z_score:        float | None
+    direction:      str
+    low_confidence: bool
 
 
 class AnalysisSummary(BaseModel):
@@ -188,18 +189,20 @@ def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
         if col not in df.columns:
             continue
         for _, row in df[df[col]].iterrows():
-            z = row[f"{metric}_z"]
+            z       = row[f"{metric}_z"]
+            z_score = None if pd.isna(z) else float(z)
             found.append({
-                "patient_id":    row["patient_id"],
-                "patient_name":  f"{row['first_name']} {row['last_name']}",
-                "session_no":    int(row["session_no"]),
-                "region":        row["region"],
-                "metric":        metric,
-                "value":         float(row[metric]),
-                "baseline_mean": float(row[f"{metric}_baseline_mean"]),
-                "baseline_std":  float(row[f"{metric}_baseline_std"]),
-                "z_score":       None if pd.isna(z) else float(z),
-                "direction":     row[f"{metric}_direction"],
+                "patient_id":     row["patient_id"],
+                "patient_name":   f"{row['first_name']} {row['last_name']}",
+                "session_no":     int(row["session_no"]),
+                "region":         row["region"],
+                "metric":         metric,
+                "value":          float(row[metric]),
+                "baseline_mean":  float(row[f"{metric}_baseline_mean"]),
+                "baseline_std":   float(row[f"{metric}_baseline_std"]),
+                "z_score":        z_score,
+                "direction":      row[f"{metric}_direction"],
+                "low_confidence": z_score is None,
             })
     return found
 
