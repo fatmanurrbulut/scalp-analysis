@@ -62,11 +62,11 @@ def _analyze(df: pd.DataFrame, pid: str, threshold: float) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def _clinical_trend(df: pd.DataFrame, pid: str, threshold_pct: float) -> dict | None:
+def _clinical_trend(df: pd.DataFrame, pid: str) -> dict | None:
     required = {"patient_id", "session_date", "region", "hair_density_hairs_cm2", "hair_thickness_um", "hair_type"}
     if not required.issubset(df.columns):
         return None
-    return analyze_patient_trend(df, pid, threshold_pct=threshold_pct)
+    return analyze_patient_trend(df, pid)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -105,11 +105,6 @@ with st.sidebar:
         min_value=1.0, max_value=4.0, value=2.0, step=0.1,
     )
 
-    trend_threshold_pct = st.slider(
-        "Trend Eşiği (%)",
-        min_value=0.1, max_value=50.0, value=10.0, step=0.5,
-    )
-
     if selected_pid is None:
         st.info("Devam etmek için bir hasta seçin.")
         st.stop()
@@ -118,7 +113,7 @@ with st.sidebar:
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
 df = _analyze(df_raw, selected_pid, threshold)
-clinical_trend = _clinical_trend(df_raw, selected_pid, trend_threshold_pct)
+clinical_trend = _clinical_trend(df_raw, selected_pid)
 
 # Session dates that have at least one anomaly (any region, any metric)
 _omask = pd.Series(False, index=df.index)
