@@ -17,6 +17,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from clinical_thresholds import get_all_thresholds
 from scalp_analysis import (
     ANOMALY_THRESHOLD,
     ANOMALY_WINDOW,
@@ -104,6 +105,11 @@ class RegionTrendRecord(BaseModel):
     is_significant:     bool
     session_count:      int
     predicted_next:     float | None
+    hair_type_classification: str | None = None
+    tv_ratio:           float | None = None
+    tv_status:          dict | None = None
+    projected_tv_ratio: float | None = None
+    aga_comparison:     dict | None = None
 
 
 class PatientTrendResponse(BaseModel):
@@ -264,6 +270,11 @@ def _to_patient_trend_response(data: dict) -> PatientTrendResponse:
 @app.get("/health", tags=["meta"], summary="Servis sağlık kontrolü")
 async def health() -> dict:
     return {"status": "ok", "service": "scalp-analysis-api", "version": "3.0.0"}
+
+
+@app.get("/thresholds", tags=["meta"], summary="Klinik referans eşikleri")
+async def thresholds() -> dict:
+    return get_all_thresholds()
 
 
 @app.post(

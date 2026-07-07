@@ -9,6 +9,13 @@ import numpy as np
 import pandas as pd
 from scipy.stats import linregress
 
+from clinical_thresholds import (
+    classify_hair_type,
+    classify_tv_status,
+    compare_to_aga_reference,
+    project_tv_ratio,
+)
+
 
 # ─── Biological CSV constants ──────────────────────────────────────────────────
 BIO_REQUIRED_COLUMNS = {
@@ -18,6 +25,14 @@ BIO_REQUIRED_COLUMNS = {
 }
 
 _HAIR_TYPES = ("Terminal", "Intermediate", "Vellus")
+
+
+def _terminal_vellus_ratio(rows: pd.DataFrame) -> float | None:
+    terminal_count = int((rows["hair_type"] == "Terminal").sum())
+    vellus_count = int((rows["hair_type"] == "Vellus").sum())
+    if terminal_count == 0 or vellus_count == 0:
+        return None
+    return terminal_count / vellus_count
 
 
 # ─── Region-level delta + regression ──────────────────────────────────────────
@@ -43,6 +58,8 @@ def analyze_region_trend(
     )
 
     results: list[dict] = []
+    occipital_rows = pdf[pdf["region"] == "Occipital"]
+    occipital_tv = _terminal_vellus_ratio(occipital_rows) if not occipital_rows.empty else None
 
     for region, rgrp in pdf.groupby("region", sort=False):
         rgrp = rgrp.sort_values("session_date").reset_index(drop=True)
@@ -64,6 +81,32 @@ def analyze_region_trend(
             "delta_terminal_pct": None,
             "direction": "Stable",
         }
+
+        region_latest = rgrp[rgrp["session_date"] == rgrp["session_date"].max()]
+        observed_density = float(region_latest["hair_density_hairs_cm2"].mean())
+        observed_thickness = float(region_latest["hair_thickness_um"].mean())
+        observed_tv = _terminal_vellus_ratio(rgrp)
+        projected_tv = (
+            project_tv_ratio(occipital_tv, region)
+            if occipital_tv is not None
+            else None
+        )
+        _base.update({
+            "hair_type_classification": classify_hair_type(observed_thickness),
+            "tv_ratio": round(observed_tv, 3) if observed_tv is not None else None,
+            "tv_status": classify_tv_status(observed_tv) if observed_tv is not None else None,
+            "projected_tv_ratio": projected_tv,
+            "aga_comparison": (
+                compare_to_aga_reference(
+                    region,
+                    observed_density,
+                    observed_thickness,
+                    observed_tv,
+                )
+                if observed_tv is not None
+                else None
+            ),
+        })
 
         if n < 2:
             results.append(_base)
@@ -114,6 +157,11 @@ def analyze_region_trend(
             "is_significant": is_sig,
             "session_count": n,
             "predicted_next": round(pred, 2),
+            "hair_type_classification": _base["hair_type_classification"],
+            "tv_ratio": _base["tv_ratio"],
+            "tv_status": _base["tv_status"],
+            "projected_tv_ratio": _base["projected_tv_ratio"],
+            "aga_comparison": _base["aga_comparison"],
         })
 
     return results
