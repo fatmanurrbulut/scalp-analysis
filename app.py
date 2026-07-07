@@ -25,8 +25,16 @@ METRICS = {
     "hair_thickness_um":      "Hair Thickness (µm)",
 }
 
-_RED  = "background-color: rgba(229,57,53,0.15); color: #e53935"
-_NORM = ""
+_RED    = "background-color: rgba(229,57,53,0.15); color: #e53935"
+_ORANGE = "background-color: rgba(255,152,0,0.15); color: #ff9800"
+_YELLOW = "background-color: rgba(244,211,94,0.15); color: #b8860b"
+_NORM   = ""
+
+SEVERITY_MARKER_STYLES = {
+    "heavy":  dict(symbol="x", size=14, color="red", line=dict(width=2.5, color="darkred")),
+    "medium": dict(symbol="circle", size=10, color="orange", line=dict(width=2, color="darkorange")),
+    "light":  dict(symbol="circle", size=7, color="#f4d35e", line=dict(width=1, color="#f4d35e"), opacity=0.7),
+}
 
 
 def _to_rgba(color: str, alpha: float) -> str:
@@ -123,10 +131,15 @@ for _m in METRICS:
         _omask |= df[_c].astype(bool)
 outlier_sessions: set = set(df.loc[_omask, "session_date"].unique())
 
-outlier_count = int(sum(
-    df[f"{m}_is_anomaly"].sum()
-    for m in METRICS if f"{m}_is_anomaly" in df.columns
-))
+severity_counts = {"heavy": 0, "medium": 0, "light": 0}
+for _m in METRICS:
+    _sc = f"{_m}_severity"
+    if _sc in df.columns:
+        _vc = df[_sc].value_counts()
+        for _lvl in severity_counts:
+            severity_counts[_lvl] += int(_vc.get(_lvl, 0))
+
+outlier_count = severity_counts["heavy"]
 
 
 # ── Summary cards ─────────────────────────────────────────────────────────────
@@ -145,10 +158,14 @@ c2.metric("Toplam Bölge", total_regions)
 _bc = "#e53935" if outlier_count > 0 else "#43a047"
 c3.markdown(
     f'<div style="border:2px solid {_bc};border-radius:8px;padding:12px 16px;margin-top:4px">'
-    f'<p style="font-size:13px;color:#888;margin:0">Outlier Sayısı</p>'
+    f'<p style="font-size:13px;color:#888;margin:0">Outlier Sayısı (Heavy)</p>'
     f'<p style="font-size:32px;font-weight:700;color:{_bc};margin:4px 0 0 0">{outlier_count}</p>'
     f'</div>',
     unsafe_allow_html=True,
+)
+c3.caption(
+    f"{severity_counts['light']} hafif, {severity_counts['medium']} orta, "
+    f"{severity_counts['heavy']} belirgin"
 )
 c4.metric("Son Seans", last_date_str)
 
@@ -206,19 +223,26 @@ def _render_chart(metric: str, label: str) -> None:
                     showlegend=False, legendgroup=region, hoverinfo="skip",
                 ))
 
-        # Anomaly markers
+        # Anomaly markers — severity'ye göre ayrı trace (heavy/medium/light)
+        sev_col = f"{metric}_severity"
         if flag_col in grp.columns:
-            out = grp[grp[flag_col]]
-            if not out.empty:
+            out_all = grp[grp[flag_col]]
+            for sev, marker_style in SEVERITY_MARKER_STYLES.items():
+                out = (
+                    out_all[out_all[sev_col] == sev]
+                    if sev_col in out_all.columns
+                    else out_all.iloc[0:0]
+                )
+                if out.empty:
+                    continue
                 cd = out[z_col].values if z_col in out.columns else np.full(len(out), np.nan)
                 fig.add_trace(go.Scatter(
                     x=out["session_date"], y=out[metric],
                     mode="markers",
-                    marker=dict(symbol="x", size=14, color="red",
-                                line=dict(width=2.5, color="darkred")),
+                    marker=marker_style,
                     showlegend=False, legendgroup=region,
                     hovertemplate=(
-                        f"<b>⚠ ANOMALİ – {region}</b><br>"
+                        f"<b>⚠ {sev.upper()} – {region}</b><br>"
                         "%{x|%d %b %Y}: %{y}<br>"
                         "z = %{customdata:.2f}<extra></extra>"
                     ),
@@ -369,6 +393,7 @@ for metric, label in METRICS.items():
         z         = row.get(f"{metric}_z", np.nan)
         bm        = row.get(f"{metric}_baseline_mean", np.nan)
         direction = row.get(f"{metric}_direction")
+        severity  = row.get(f"{metric}_severity")
         val       = float(row[metric])
         rows.append({
             "Hasta":         f"{row['first_name']} {row['last_name']}",
@@ -379,12 +404,24 @@ for metric, label in METRICS.items():
             "Baseline Mean": round(float(bm), 2) if pd.notna(bm) else "—",
             "Z-score":       round(float(z),  2) if pd.notna(z)  else "—",
             "Yön":           "↑ Yüksek" if direction == "high" else "↓ Düşük",
+            "Severity":      severity.upper() if severity else "—",
         })
 
 if rows:
     df_tbl = pd.DataFrame(rows)
+
+    def _severity_row_style(row):
+        sev = str(row.get("Severity", "")).lower()
+        if sev == "heavy":
+            return [_RED] * len(row)
+        elif sev == "medium":
+            return [_ORANGE] * len(row)
+        elif sev == "light":
+            return [_YELLOW] * len(row)
+        return [_NORM] * len(row)
+
     st.dataframe(
-        df_tbl.style.apply(lambda _: [_RED] * len(df_tbl.columns), axis=1),
+        df_tbl.style.apply(_severity_row_style, axis=1),
         use_container_width=True,
         hide_index=True,
     )

@@ -40,6 +40,9 @@ import pandas as pd
 ANOMALY_WINDOW    = 3     # rolling baseline penceresi (son N seans, mevcut haric)
 ANOMALY_THRESHOLD = 2.0   # +/- std esigi
 
+SEVERITY_MEDIUM_MULT = 1.25   # abs(z) >= threshold * bu deger -> "medium"
+SEVERITY_HEAVY_MULT  = 1.5    # abs(z) >= threshold * bu deger -> "heavy"
+
 
 # ─── ANSI Renk Kodları ───────────────────────────────────────────────────────
 
@@ -132,10 +135,20 @@ def detect_anomalies(
         (tek bir farklı noktadan istatistiksel sapma hesaplanamaz),
         z=NaN kalır -> API'de z_score=None + low_confidence=True olarak yansır
 
+    is_anomaly=True olan satırlar ayrıca {metric}_severity ile derecelendirilir
+    (threshold'a göre RELATİF, is_anomaly/z/direction mantığını değiştirmez,
+    sadece ek bilgi):
+      - abs(z) >= threshold * SEVERITY_HEAVY_MULT  -> "heavy"
+      - abs(z) >= threshold * SEVERITY_MEDIUM_MULT -> "medium"
+      - abs(z) >= threshold                        -> "light"
+      - z tanımsız (std=0, low_confidence)         -> "heavy" (temkinli varsayım)
+
     Dönen DataFrame: orijinal tüm satırlar +
         {metric}_baseline_mean, {metric}_baseline_std,
-        {metric}_z, {metric}_is_anomaly, {metric}_direction  sütunları eklenerek.
+        {metric}_z, {metric}_is_anomaly, {metric}_direction, {metric}_severity
+        sütunları eklenerek.
         direction: "high" / "low" / "insufficient_data" / None
+        severity:  "heavy" / "medium" / "light" / None (is_anomaly=False ise None)
     """
     result_frames = []
 
@@ -150,6 +163,7 @@ def detect_anomalies(
             zs         = np.full(n, np.nan)
             anomalies  = np.zeros(n, dtype=bool)
             directions = np.full(n, None, dtype=object)
+            severities = np.full(n, None, dtype=object)
 
             if n < window:
                 directions[:] = "insufficient_data"
@@ -170,6 +184,14 @@ def detect_anomalies(
                             anomalies[i], directions[i] = True, "high"
                         elif z < -threshold:
                             anomalies[i], directions[i] = True, "low"
+                        if anomalies[i]:
+                            az = abs(z)
+                            if az >= threshold * SEVERITY_HEAVY_MULT:
+                                severities[i] = "heavy"
+                            elif az >= threshold * SEVERITY_MEDIUM_MULT:
+                                severities[i] = "medium"
+                            else:
+                                severities[i] = "light"
                     elif vals[i] == m:
                         # pencere birebir ayni (std=0) ve deger de ayni -> degisim yok
                         zs[i] = 0.0
@@ -178,12 +200,14 @@ def detect_anomalies(
                         # anomali kesin, ama z-score tanimsiz (dusuk guven)
                         anomalies[i]  = True
                         directions[i] = "high" if vals[i] > m else "low"
+                        severities[i] = "heavy"
 
             grp[f"{metric}_baseline_mean"] = means
             grp[f"{metric}_baseline_std"]  = stds
             grp[f"{metric}_z"]             = zs
             grp[f"{metric}_is_anomaly"]    = anomalies
             grp[f"{metric}_direction"]     = directions
+            grp[f"{metric}_severity"]      = severities
 
         result_frames.append(grp)
 
@@ -229,11 +253,14 @@ def print_anomalies(
             sno   = int(row["session_no"])
             pid   = row["patient_id"]
             direction      = row[f"{metric}_direction"]
+            severity       = row.get(f"{metric}_severity")
             low_confidence = pd.isna(z)
             arrow  = "↑" if direction == "high" else "↓"
             z_desc = f"{arrow}{abs(z):.2f}" if not low_confidence else "düşük güven (pencere sabit, z tanımsız)"
+            sev_tag = f"[{severity.upper()}] " if severity else ""
 
             line = (
+                f"{sev_tag}"
                 f"{row['first_name']} {row['last_name']} | "
                 f"Bölge: {row['region']:12s} | "
                 f"Seans: {sno} | "
@@ -253,6 +280,7 @@ def print_anomalies(
                 "z_score":        None if low_confidence else z,
                 "direction":      direction,
                 "low_confidence": low_confidence,
+                "severity":       severity,
             })
 
     if not found:
