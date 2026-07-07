@@ -1,6 +1,4 @@
 import io
-import os
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -55,21 +53,6 @@ def _load(file_bytes: bytes) -> pd.DataFrame:
     return df.sort_values(["patient_id", "region", "session_no"])
 
 
-def _default_csv_bytes() -> bytes | None:
-    candidates = [
-        os.getenv("SCALP_DATA_FILE"),
-        "data/mock_patient_session_analysis_biological.csv",
-        "mock_patient_session_analysis_biological.csv",
-    ]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        path = Path(candidate)
-        if path.exists():
-            return path.read_bytes()
-    return None
-
-
 @st.cache_data(show_spinner=False)
 def _analyze(df: pd.DataFrame, pid: str, threshold: float) -> pd.DataFrame:
     pat = df[df["patient_id"] == pid].copy()
@@ -93,13 +76,12 @@ with st.sidebar:
     st.divider()
 
     uploaded = st.file_uploader("CSV Yükle", type=["csv"])
-    default_bytes = _default_csv_bytes()
 
-    if uploaded is None and default_bytes is None:
+    if uploaded is None:
         st.info("Sol panelden CSV dosyası yükleyin.")
         st.stop()
 
-    df_raw = _load(uploaded.read() if uploaded is not None else default_bytes)
+    df_raw = _load(uploaded.read())
 
     patient_map: dict[str, str] = (
         df_raw[["patient_id", "first_name", "last_name"]]
