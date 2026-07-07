@@ -379,7 +379,6 @@ def main():
     print(f"\n{C.BOLD}{C.CYAN}"
           f"──────────────────────────────────────────────────\n"
           f"   Scalp Analysis – Rolling Z-Score Anomali Tespiti\n"
-          f"   Heptapus Group\n"
           f"──────────────────────────────────────────────────"
           f"{C.RESET}")
 
