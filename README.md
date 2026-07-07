@@ -33,6 +33,7 @@ Servis çalışırken: http://localhost:8000/docs
 | Yöntem | Endpoint | Açıklama |
 |--------|----------|----------|
 | GET | `/health` | Servis sağlık kontrolü |
+| GET | `/thresholds` | Klinik eşik ve referans değerleri |
 | POST | `/analyze` | Tüm veri seti anomali analizi (CSV veya JSON) |
 | GET | `/analyze/{patient_id}` | Tek hasta anomali analizi |
 | POST | `/trend` | Tüm veri seti trend analizi |
@@ -47,6 +48,9 @@ curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0" \
 
 # Tek hasta trend
 curl "http://localhost:8000/trend/PATIENT-UUID"
+
+# Klinik referans eşikleri
+curl "http://localhost:8000/thresholds"
 ```
 
 ---
@@ -136,6 +140,10 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
 | `slope`, `slope_pct` | Regresyon eğimi (bilgi amaçlı) |
 | `r_squared`, `p_value`, `is_significant` | Regresyonun istatistiksel değerleri (bilgi amaçlı) |
 | `predicted_next` | Regresyona göre bir sonraki seans tahmini |
+| `hair_type_classification` | Son seans kalınlığına göre Terminal / Intermediate / Vellus sınıfı |
+| `tv_ratio`, `tv_status` | Hesaplanabiliyorsa Terminal/Vellus oranı ve klinik durumu |
+| `projected_tv_ratio` | Occipital T/V oranından bölgeye projekte edilen beklenen T/V |
+| `aga_comparison` | Bölgenin Advanced AGA referanslarıyla karşılaştırması |
 
 Minimum `2` seans olmadan delta/regresyon hesaplanmaz; `direction` varsayılan olarak `Stable`, diğer alanlar `null` döner.
 
