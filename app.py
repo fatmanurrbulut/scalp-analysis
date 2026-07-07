@@ -1,4 +1,6 @@
 import io
+import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -6,7 +8,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from clinical_thresholds import get_all_thresholds
 from scalp_analysis import ANOMALY_WINDOW, detect_anomalies
+from trend_analysis import analyze_patient_trend
 
 st.set_page_config(
     page_title="Scalp Analysis Dashboard",
@@ -51,12 +55,35 @@ def _load(file_bytes: bytes) -> pd.DataFrame:
     return df.sort_values(["patient_id", "region", "session_no"])
 
 
+def _default_csv_bytes() -> bytes | None:
+    candidates = [
+        os.getenv("SCALP_DATA_FILE"),
+        "data/mock_patient_session_analysis_biological.csv",
+        "mock_patient_session_analysis_biological.csv",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if path.exists():
+            return path.read_bytes()
+    return None
+
+
 @st.cache_data(show_spinner=False)
 def _analyze(df: pd.DataFrame, pid: str, threshold: float) -> pd.DataFrame:
     pat = df[df["patient_id"] == pid].copy()
     if pat.empty:
         return pat
     return detect_anomalies(pat, window=ANOMALY_WINDOW, threshold=threshold)
+
+
+@st.cache_data(show_spinner=False)
+def _clinical_trend(df: pd.DataFrame, pid: str, threshold_pct: float) -> dict | None:
+    required = {"patient_id", "session_date", "region", "hair_density_hairs_cm2", "hair_thickness_um", "hair_type"}
+    if not required.issubset(df.columns):
+        return None
+    return analyze_patient_trend(df, pid, threshold_pct=threshold_pct)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -66,12 +93,13 @@ with st.sidebar:
     st.divider()
 
     uploaded = st.file_uploader("CSV Yükle", type=["csv"])
+    default_bytes = _default_csv_bytes()
 
-    if uploaded is None:
+    if uploaded is None and default_bytes is None:
         st.info("Sol panelden CSV dosyası yükleyin.")
         st.stop()
 
-    df_raw = _load(uploaded.read())
+    df_raw = _load(uploaded.read() if uploaded is not None else default_bytes)
 
     patient_map: dict[str, str] = (
         df_raw[["patient_id", "first_name", "last_name"]]
@@ -95,6 +123,11 @@ with st.sidebar:
         min_value=1.0, max_value=4.0, value=2.0, step=0.1,
     )
 
+    trend_threshold_pct = st.slider(
+        "Trend Eşiği (%)",
+        min_value=0.1, max_value=50.0, value=10.0, step=0.5,
+    )
+
     if selected_pid is None:
         st.info("Devam etmek için bir hasta seçin.")
         st.stop()
@@ -103,6 +136,7 @@ with st.sidebar:
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
 df = _analyze(df_raw, selected_pid, threshold)
+clinical_trend = _clinical_trend(df_raw, selected_pid, trend_threshold_pct)
 
 # Session dates that have at least one anomaly (any region, any metric)
 _omask = pd.Series(False, index=df.index)
@@ -277,6 +311,71 @@ with right_col:
         )
     else:
         st.info("Bu veri setinde `hair_type` sütunu yok.")
+
+
+# ── Clinical reference panel ──────────────────────────────────────────────────
+
+st.divider()
+st.subheader("Klinik Eşikler ve Bölge Özeti")
+
+if clinical_trend is None:
+    st.info("Klinik özet için biyolojik CSV sütunları gerekli: hair_type, hair_density_hairs_cm2, hair_thickness_um.")
+else:
+    summary = clinical_trend["summary"]
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("Ortalama Yoğunluk", summary["avg_density"])
+    sc2.metric("Ortalama Kalınlık", summary["avg_thickness"])
+    sc3.metric("Terminal %", summary["terminal_pct"])
+    sc4.metric("Genel Yön", clinical_trend["overall_direction"])
+
+    clinical_rows = []
+    for region in clinical_trend["regions"]:
+        tv_status = region.get("tv_status") or {}
+        aga = region.get("aga_comparison") or {}
+        clinical_rows.append({
+            "Bölge": region["region"],
+            "Yön": region["direction"],
+            "Yoğunluk Δ%": region["delta_density_pct"],
+            "Kalınlık Δ%": region["delta_thickness_pct"],
+            "Saç Tipi": region.get("hair_type_classification"),
+            "T/V": region.get("tv_ratio"),
+            "T/V Durumu": tv_status.get("status"),
+            "Beklenen T/V": region.get("projected_tv_ratio"),
+            "AGA Benzerliği": aga.get("overall_aga_similarity"),
+        })
+
+    st.dataframe(
+        pd.DataFrame(clinical_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    with st.expander("Referans eşiklerini göster"):
+        thresholds = get_all_thresholds()
+        c_left, c_right = st.columns(2)
+        with c_left:
+            st.caption("Saç tipi eşikleri")
+            st.dataframe(
+                pd.DataFrame([thresholds["hair_type_thresholds"]]),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption("T/V eşikleri")
+            st.dataframe(
+                pd.DataFrame([thresholds["tv_thresholds"]]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        with c_right:
+            st.caption("Bölge rho faktörleri")
+            st.dataframe(
+                pd.DataFrame(
+                    thresholds["tv_rho_factors"].items(),
+                    columns=["Bölge", "Rho"],
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 # ── Anomali detay tablosu ───────────────────────────────────────────────────────
