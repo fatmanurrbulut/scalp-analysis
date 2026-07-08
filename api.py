@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from clinical_thresholds import get_all_thresholds
 from scalp_analysis import (
+    ANOMALY_MIN_PCT_MARGIN,
     ANOMALY_THRESHOLD,
     ANOMALY_WINDOW,
     METRICS,
@@ -72,12 +73,13 @@ class AnalysisSummary(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
-    generated_at: str
-    method:       str
-    window:       int
-    threshold:    float
-    summary:      AnalysisSummary
-    anomalies:    list[AnomalyRecord]
+    generated_at:   str
+    method:         str
+    window:         int
+    threshold:      float
+    min_pct_margin: float
+    summary:        AnalysisSummary
+    anomalies:      list[AnomalyRecord]
 
 
 # ─── Dashboard DTOs ────────────────────────────────────────────────────────────
@@ -93,10 +95,17 @@ class PatientTrendSummary(BaseModel):
 class RegionTrendRecord(BaseModel):
     region:             str
     direction:          str
+    confidence:         str | None = None
     delta_density:      float | None
     delta_density_pct:  float | None
+    recent_avg:         float | None = None
+    previous_avg:       float | None = None
+    window_pct_change:  float | None = None
     delta_thickness:    float | None
     delta_thickness_pct: float | None
+    thickness_recent_avg:        float | None = None
+    thickness_previous_avg:      float | None = None
+    thickness_window_pct_change: float | None = None
     delta_terminal_pct: float | None
     slope:              float | None
     slope_pct:          float | None
@@ -145,6 +154,13 @@ _WINDOW_QUERY = Query(
 _THRESHOLD_QUERY = Query(
     default=ANOMALY_THRESHOLD, ge=0.1, le=10.0,
     description=f"Z-score eşiği, ± std (varsayılan: {ANOMALY_THRESHOLD})",
+)
+_MIN_PCT_MARGIN_QUERY = Query(
+    default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
+    description=(
+        f"Minimum pratik % sapma marjı (varsayılan: {ANOMALY_MIN_PCT_MARGIN}). "
+        "Anomali için hem |z| > threshold HEM de bu marjın aşılması gerekir."
+    ),
 )
 
 
@@ -218,12 +234,14 @@ def _build_response(
     anomalies: list[dict],
     window: int,
     threshold: float,
+    min_pct_margin: float,
 ) -> AnalyzeResponse:
     return AnalyzeResponse(
         generated_at=datetime.now(timezone.utc).isoformat(),
-        method=f"rolling_zscore_window_{window}_threshold_{threshold}",
+        method=f"rolling_zscore_window_{window}_threshold_{threshold}_minpct_{min_pct_margin}",
         window=window,
         threshold=threshold,
+        min_pct_margin=min_pct_margin,
         summary=AnalysisSummary(
             total_records=int(len(df)),
             total_patients=int(df["patient_id"].nunique()),
@@ -238,6 +256,7 @@ def _run_analysis(
     df: pd.DataFrame,
     window: int,
     threshold: float,
+    min_pct_margin: float,
     patient_id: str | None = None,
 ) -> AnalyzeResponse:
     _validate_df(df)
@@ -250,9 +269,9 @@ def _run_analysis(
                 detail=f"patient_id bulunamadı: {patient_id}",
             )
 
-    df        = detect_anomalies(df, window, threshold)
+    df        = detect_anomalies(df, window, threshold, min_pct_margin)
     anomalies = _extract_anomalies(df)
-    return _build_response(df, anomalies, window, threshold)
+    return _build_response(df, anomalies, window, threshold, min_pct_margin)
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -285,8 +304,9 @@ async def thresholds() -> dict:
 )
 async def analyze(
     request: Request,
-    window:    int   = _WINDOW_QUERY,
-    threshold: float = _THRESHOLD_QUERY,
+    window:         int   = _WINDOW_QUERY,
+    threshold:      float = _THRESHOLD_QUERY,
+    min_pct_margin: float = _MIN_PCT_MARGIN_QUERY,
 ) -> AnalyzeResponse:
     """
     İki içerik türü desteklenir:
@@ -295,7 +315,7 @@ async def analyze(
     - `file` alanı: CSV dosyası
 
     ```
-    curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0" \\
+    curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0&min_pct_margin=10.0" \\
          -F "file=@data.csv"
     ```
 
@@ -343,7 +363,7 @@ async def analyze(
             ),
         )
 
-    return _run_analysis(df, window, threshold)
+    return _run_analysis(df, window, threshold, min_pct_margin)
 
 
 @app.get(
@@ -354,8 +374,9 @@ async def analyze(
 )
 async def analyze_patient(
     patient_id: str,
-    window:     int   = _WINDOW_QUERY,
-    threshold:  float = _THRESHOLD_QUERY,
+    window:         int   = _WINDOW_QUERY,
+    threshold:      float = _THRESHOLD_QUERY,
+    min_pct_margin: float = _MIN_PCT_MARGIN_QUERY,
 ) -> AnalyzeResponse:
     """
     Belirli bir hasta için anomali analizi.
@@ -364,7 +385,7 @@ async def analyze_patient(
 
     ```
     SCALP_DATA_FILE=data.csv uvicorn api:app --reload
-    curl "http://localhost:8000/analyze/PATIENT-UUID?window=3&threshold=2.0"
+    curl "http://localhost:8000/analyze/PATIENT-UUID?window=3&threshold=2.0&min_pct_margin=10.0"
     ```
     """
     if not _DEFAULT_DATA_FILE:
@@ -378,7 +399,7 @@ async def analyze_patient(
         raise HTTPException(status_code=404, detail=f"Veri dosyası bulunamadı: {_DEFAULT_DATA_FILE}")
 
     df = _csv_to_df(path.read_bytes())
-    return _run_analysis(df, window, threshold, patient_id=patient_id)
+    return _run_analysis(df, window, threshold, min_pct_margin, patient_id=patient_id)
 
 
 @app.get(
@@ -391,20 +412,39 @@ async def trend_patient(
     patient_id: str,
     threshold_pct: float = Query(
         default=10.0, ge=0.1, le=100.0,
-        description="Önceki seansa göre % değişim eşiği (varsayılan: 10.0)",
+        description="Yetersiz pencere verisi durumunda fallback: önceki seansa göre % değişim eşiği (varsayılan: 10.0)",
+    ),
+    window_size: int = Query(
+        default=3, ge=2, le=30,
+        description="Pencere bazlı karşılaştırma için seans sayısı (varsayılan: 3)",
+    ),
+    sigma_mult: float = Query(
+        default=2.0, ge=0.1, le=10.0,
+        description="Bant genişliği için std çarpanı (varsayılan: 2.0)",
+    ),
+    min_pct_margin: float = Query(
+        default=10.0, ge=0.0, le=100.0,
+        description="Bant genişliği için minimum pratik % marj (varsayılan: 10.0)",
     ),
 ) -> PatientTrendResponse:
     """
-    Belirli bir hasta için bölge bazlı delta analizi + linear regression.
+    Belirli bir hasta için bölge bazlı pencere-ortalaması trend analizi + linear regression.
 
     Veri kaynağı: `SCALP_DATA_FILE` ortam değişkeni ile tanımlı CSV dosyası.
 
     Her bölge için:
-    - `direction`: Increasing / Decreasing / Stable (delta_density_pct vs threshold_pct)
-    - `delta_density / delta_density_pct`: son seans – önceki seans farkı
-    - `delta_thickness / delta_thickness_pct`: kalınlık değişimi
+    - `direction`: Increasing / Decreasing / Stable — son `window_size` seansın
+      ortalaması (recent_avg), önceki `window_size` seansın ortalamasıyla
+      (previous_avg) karşılaştırılarak belirlenir. Bant = max(sigma_mult *
+      pooled_std, previous_avg * min_pct_margin/100).
+    - `confidence`: "high" (pencere için yeterli veri var) / "low" (n < window_size*2,
+      eski son-iki-seans delta mantığına fallback yapıldı)
+    - `delta_density / delta_density_pct`: son seans – önceki seans farkı (bilgi amaçlı)
+    - `recent_avg / previous_avg / window_pct_change`: pencere bazlı karşılaştırma
+    - `delta_thickness / delta_thickness_pct` ve `thickness_recent_avg / ...`: kalınlık için aynı mantık
     - `delta_terminal_pct`: Terminal yüzdesi değişimi
-    - `slope / r_squared / p_value / predicted_next`: linear regression çıktıları
+    - `slope / r_squared / p_value / predicted_next`: linear regression — yalnızca
+      bilgi amaçlı, direction kararına katılmaz
 
     Hasta özeti:
     - `overall_direction`: Improving / Stable / Worsening (bölge çoğunluğu)
@@ -426,7 +466,9 @@ async def trend_patient(
         raise HTTPException(status_code=404, detail=f"patient_id bulunamadı: {patient_id}")
 
     try:
-        result = analyze_patient_trend(df, patient_id, threshold_pct)
+        result = analyze_patient_trend(
+            df, patient_id, threshold_pct, window_size, sigma_mult, min_pct_margin
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -443,7 +485,19 @@ async def trend(
     request: Request,
     threshold_pct: float = Query(
         default=10.0, ge=0.1, le=100.0,
-        description="Önceki seansa göre % değişim eşiği (varsayılan: 10.0)",
+        description="Yetersiz pencere verisi durumunda fallback: önceki seansa göre % değişim eşiği (varsayılan: 10.0)",
+    ),
+    window_size: int = Query(
+        default=3, ge=2, le=30,
+        description="Pencere bazlı karşılaştırma için seans sayısı (varsayılan: 3)",
+    ),
+    sigma_mult: float = Query(
+        default=2.0, ge=0.1, le=10.0,
+        description="Bant genişliği için std çarpanı (varsayılan: 2.0)",
+    ),
+    min_pct_margin: float = Query(
+        default=10.0, ge=0.0, le=100.0,
+        description="Bant genişliği için minimum pratik % marj (varsayılan: 10.0)",
     ),
 ) -> ClinicTrendResponse:
     """
@@ -497,7 +551,7 @@ async def trend(
         )
 
     _validate_bio_df(df)
-    result = analyze_clinic_trend(df, threshold_pct)
+    result = analyze_clinic_trend(df, threshold_pct, window_size, sigma_mult, min_pct_margin)
 
     return ClinicTrendResponse(
         generated_at=datetime.now(timezone.utc).isoformat(),

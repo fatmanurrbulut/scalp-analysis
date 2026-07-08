@@ -35,16 +35,88 @@ def _terminal_vellus_ratio(rows: pd.DataFrame) -> float | None:
     return terminal_count / vellus_count
 
 
+def _windowed_metric_trend(
+    vals: np.ndarray,
+    window_size: int,
+    sigma_mult: float,
+    min_pct_margin: float,
+) -> dict:
+    """
+    Son `window_size` seansın ortalamasını (recent_avg), bir önceki
+    `window_size` seansın ortalamasıyla (previous_avg) karşılaştırır.
+
+    Bant (Grafana margin-band mantığı):
+        band = max(sigma_mult * pooled_std, abs(previous_avg) * min_pct_margin/100)
+
+    pooled_std: recent + previous birleşik verinin std'si (ddof=1). Böylece
+    hem istatistiksel (sigma) hem pratik (%) anlamlılık aranır — tek nokta
+    farkının gürültüye duyarlılığı azaltılır.
+
+    Çağıran, `vals` dizisinin en az `2 * window_size` eleman içerdiğinden
+    emin olmalı.
+    """
+    recent   = vals[-window_size:]
+    previous = vals[-2 * window_size:-window_size]
+
+    recent_avg   = float(recent.mean())
+    previous_avg = float(previous.mean())
+
+    pooled = np.concatenate([recent, previous])
+    pooled_std = float(pooled.std(ddof=1)) if len(pooled) > 1 else 0.0
+
+    band = max(sigma_mult * pooled_std, abs(previous_avg) * (min_pct_margin / 100.0))
+    diff = recent_avg - previous_avg
+
+    if diff > band:
+        direction = "Increasing"
+    elif -diff > band:
+        direction = "Decreasing"
+    else:
+        direction = "Stable"
+
+    window_pct_change = round(diff / previous_avg * 100, 2) if previous_avg != 0 else None
+
+    return {
+        "recent_avg":        round(recent_avg, 2),
+        "previous_avg":      round(previous_avg, 2),
+        "window_pct_change": window_pct_change,
+        "direction":         direction,
+    }
+
+
 # ─── Region-level delta + regression ──────────────────────────────────────────
 
 def analyze_region_trend(
     df: pd.DataFrame,
     patient_id: str,
     threshold_pct: float = 10.0,
+    window_size: int = 3,
+    sigma_mult: float = 2.0,
+    min_pct_margin: float = 10.0,
 ) -> list[dict]:
     """
-    Hasta × bölge bazlı delta analizi (son seans – önceki seans) +
-    tüm seanslara linear regression.
+    Hasta × bölge bazlı trend analizi + tüm seanslara linear regression.
+
+    direction kararı (pencere bazlı):
+        n >= window_size * 2 ise son `window_size` seansın ortalaması
+        (recent_avg), bir önceki `window_size` seansın ortalamasıyla
+        (previous_avg) karşılaştırılır — bkz. _windowed_metric_trend.
+        Tek nokta (son 2 seans) farkı yerine pencere ortalaması kullanmak
+        gürültüye duyarlılığı azaltır.
+
+        n < window_size * 2 (ama >= 2) ise pencere için yeterli veri yoktur;
+        eski son-iki-seans delta mantığına fallback yapılır ve response'a
+        confidence="low" eklenir. n >= window_size * 2 durumunda confidence="high".
+
+        delta_density / delta_density_pct her zaman son-iki-seans farkını
+        gösterir (bilgi amaçlı); recent_avg / previous_avg / window_pct_change
+        pencere bazlı hesabı ayrıca gösterir — ikisi de response'ta yer alır.
+        delta_thickness için de aynı pencere fonksiyonu çağrılır, sonuçları
+        thickness_recent_avg / thickness_previous_avg / thickness_window_pct_change
+        alanlarında döner.
+
+        Linear regression (slope, r_squared, p_value) yalnızca bilgi amaçlıdır,
+        direction kararına KATILMAZ.
 
     Returns:
         Her bölge için bir dict içeren liste.
@@ -79,6 +151,10 @@ def analyze_region_trend(
             "delta_density": None, "delta_density_pct": None,
             "delta_thickness": None, "delta_thickness_pct": None,
             "delta_terminal_pct": None,
+            "recent_avg": None, "previous_avg": None, "window_pct_change": None,
+            "thickness_recent_avg": None, "thickness_previous_avg": None,
+            "thickness_window_pct_change": None,
+            "confidence": None,
             "direction": "Stable",
         }
 
@@ -124,7 +200,8 @@ def analyze_region_trend(
         pred = float(lr.intercept + slope * n)
         s_pct = round((slope * n / fv) * 100, 2) if fv != 0 else None
 
-        # Last-vs-previous session delta — direction burada belirleniyor (son 2 seans farkı)
+        # Son-iki-seans delta — her zaman hesaplanır (bilgi amaçlı, n < window_size*2
+        # ise ayrıca direction fallback'i olarak da kullanılır)
         d_delta = round(float(density[-1]) - float(density[-2]), 2)
         prev_d = float(density[-2])
         d_delta_pct = round(d_delta / prev_d * 100, 2) if prev_d != 0 else 0.0
@@ -135,20 +212,44 @@ def analyze_region_trend(
 
         term_delta = round(float(is_terminal.iloc[-1]) - float(is_terminal.iloc[-2]), 2)
 
-        if d_delta_pct > threshold_pct:
-            direction = "Increasing"
-        elif d_delta_pct < -threshold_pct:
-            direction = "Decreasing"
+        if n >= window_size * 2:
+            # Pencere bazlı karşılaştırma — direction burada belirleniyor
+            density_window   = _windowed_metric_trend(density, window_size, sigma_mult, min_pct_margin)
+            thickness_window = _windowed_metric_trend(thickness, window_size, sigma_mult, min_pct_margin)
+            direction     = density_window["direction"]
+            confidence    = "high"
+            recent_avg          = density_window["recent_avg"]
+            previous_avg        = density_window["previous_avg"]
+            window_pct_change   = density_window["window_pct_change"]
+            thickness_recent_avg        = thickness_window["recent_avg"]
+            thickness_previous_avg      = thickness_window["previous_avg"]
+            thickness_window_pct_change = thickness_window["window_pct_change"]
         else:
-            direction = "Stable"
+            # Pencere için yeterli veri yok — eski son-iki-seans delta mantığına fallback
+            if d_delta_pct > threshold_pct:
+                direction = "Increasing"
+            elif d_delta_pct < -threshold_pct:
+                direction = "Decreasing"
+            else:
+                direction = "Stable"
+            confidence = "low"
+            recent_avg = previous_avg = window_pct_change = None
+            thickness_recent_avg = thickness_previous_avg = thickness_window_pct_change = None
 
         results.append({
             "region": region,
             "direction": direction,
+            "confidence": confidence,
             "delta_density": d_delta,
             "delta_density_pct": d_delta_pct,
+            "recent_avg": recent_avg,
+            "previous_avg": previous_avg,
+            "window_pct_change": window_pct_change,
             "delta_thickness": t_delta,
             "delta_thickness_pct": t_delta_pct,
+            "thickness_recent_avg": thickness_recent_avg,
+            "thickness_previous_avg": thickness_previous_avg,
+            "thickness_window_pct_change": thickness_window_pct_change,
             "delta_terminal_pct": term_delta,
             "slope": round(slope, 4),
             "slope_pct": s_pct,
@@ -173,6 +274,9 @@ def analyze_patient_trend(
     df: pd.DataFrame,
     patient_id: str,
     threshold_pct: float = 10.0,
+    window_size: int = 3,
+    sigma_mult: float = 2.0,
+    min_pct_margin: float = 10.0,
 ) -> dict:
     """
     Hasta bazlı trend özeti: tüm bölgelerin ortalaması + overall_direction.
@@ -189,7 +293,9 @@ def analyze_patient_trend(
     row0 = pdf.iloc[0]
     name = f"{row0['first_name']} {row0['last_name']}"
 
-    regions = analyze_region_trend(df, patient_id, threshold_pct)
+    regions = analyze_region_trend(
+        df, patient_id, threshold_pct, window_size, sigma_mult, min_pct_margin
+    )
 
     # Latest session aggregates (density, thickness, hair type distribution)
     pdf["session_date"] = pd.to_datetime(pdf["session_date"])
@@ -234,13 +340,19 @@ def analyze_patient_trend(
 def analyze_clinic_trend(
     df: pd.DataFrame,
     threshold_pct: float = 10.0,
+    window_size: int = 3,
+    sigma_mult: float = 2.0,
+    min_pct_margin: float = 10.0,
 ) -> dict:
     """
     Klinik geneli trend özeti: tüm hastalar için analyze_patient_trend çağrısı,
     ardından klinik istatistikleri ve region bazlı en iyi/kötü bölge tespiti.
     """
     patient_ids = df["patient_id"].unique()
-    patients = [analyze_patient_trend(df, pid, threshold_pct) for pid in patient_ids]
+    patients = [
+        analyze_patient_trend(df, pid, threshold_pct, window_size, sigma_mult, min_pct_margin)
+        for pid in patient_ids
+    ]
 
     if not patients:
         return {

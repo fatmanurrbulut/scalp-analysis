@@ -37,8 +37,10 @@ import pandas as pd
 
 # ─── Sabitler ────────────────────────────────────────────────────────────────
 
-ANOMALY_WINDOW    = 3     # rolling baseline penceresi (son N seans, mevcut haric)
-ANOMALY_THRESHOLD = 2.0   # +/- std esigi
+ANOMALY_WINDOW         = 3     # rolling baseline penceresi (son N seans, mevcut haric)
+ANOMALY_THRESHOLD      = 2.0   # +/- std esigi
+ANOMALY_MIN_PCT_MARGIN = 10.0  # minimum pratik % sapma - bunun altindaki degisim
+                                # istatistiksel olarak z esigini assa bile anomali sayilmaz
 
 SEVERITY_MEDIUM_MULT = 1.25   # abs(z) >= threshold * bu deger -> "medium"
 SEVERITY_HEAVY_MULT  = 1.5    # abs(z) >= threshold * bu deger -> "heavy"
@@ -118,22 +120,28 @@ def detect_anomalies(
     df: pd.DataFrame,
     window: int = ANOMALY_WINDOW,
     threshold: float = ANOMALY_THRESHOLD,
+    min_pct_margin: float = ANOMALY_MIN_PCT_MARGIN,
 ) -> pd.DataFrame:
     """
     Her (patient_id, region, metric) grubu için:
       - baseline = mevcut seanstan önceki en fazla `window` seansın ort./std'si
         (sabit boyutlu pencere — tüm geçmiş değil)
       - z = (değer - baseline_mean) / baseline_std
-      - |z| > threshold → ANOMALİ (hem artış hem düşüş yakalanır)
+      - pct_deviation = |değer - baseline_mean| / baseline_mean * 100
+      - ANOMALİ için HEM |z| > threshold HEM pct_deviation > min_pct_margin
+        gerekir (istatistiksel + pratik anlamlılık birlikte aranır). Böylece
+        çok düşük varyanslı (stabil) hastalarda, istatistiksel olarak eşiği
+        aşan ama pratikte önemsiz küçük sapmalar anomali sayılmaz.
 
     Toplam seans sayısı `window`'dan az olan (patient_id, region) grupları
     için tüm satırlarda direction="insufficient_data" döner.
 
     std=0 durumu (pencerede tüm değerler birebir aynı) ayrıca ele alınır:
       - mevcut değer de aynıysa  -> değişim yok, z=0.0, anomali değil
-      - mevcut değer farklıysa   -> anomali kesin ama z-score tanımsız
-        (tek bir farklı noktadan istatistiksel sapma hesaplanamaz),
-        z=NaN kalır -> API'de z_score=None + low_confidence=True olarak yansır
+      - mevcut değer farklıysa   -> z-score tanımsız (tek bir farklı noktadan
+        istatistiksel sapma hesaplanamaz); yine de pct_deviation > min_pct_margin
+        şartı aranır — aşarsa anomali (z=NaN, low_confidence), aşmazsa değişim
+        pratikte önemsiz sayılır ve anomali işaretlenmez
 
     is_anomaly=True olan satırlar ayrıca {metric}_severity ile derecelendirilir
     (threshold'a göre RELATİF, is_anomaly/z/direction mantığını değiştirmez,
@@ -177,14 +185,14 @@ def detect_anomalies(
                     s = window_vals.std(ddof=1)
                     means[i] = round(m, 2)
                     stds[i]  = round(s, 2)
+                    pct_deviation = abs(vals[i] - m) / m * 100 if m != 0 else 0
                     if s > 0:
                         z = (vals[i] - m) / s
                         zs[i] = round(z, 3)
-                        if z > threshold:
-                            anomalies[i], directions[i] = True, "high"
-                        elif z < -threshold:
-                            anomalies[i], directions[i] = True, "low"
-                        if anomalies[i]:
+                        is_anomaly_final = (abs(z) > threshold) and (pct_deviation > min_pct_margin)
+                        if is_anomaly_final:
+                            anomalies[i]  = True
+                            directions[i] = "high" if z > threshold else "low"
                             az = abs(z)
                             if az >= threshold * SEVERITY_HEAVY_MULT:
                                 severities[i] = "heavy"
@@ -197,10 +205,11 @@ def detect_anomalies(
                         zs[i] = 0.0
                     else:
                         # pencere birebir ayni (std=0) ama deger farkli ->
-                        # anomali kesin, ama z-score tanimsiz (dusuk guven)
-                        anomalies[i]  = True
-                        directions[i] = "high" if vals[i] > m else "low"
-                        severities[i] = "heavy"
+                        # z-score tanimsiz; yine de pratik marj sarti araniyor
+                        if pct_deviation > min_pct_margin:
+                            anomalies[i]  = True
+                            directions[i] = "high" if vals[i] > m else "low"
+                            severities[i] = "heavy"
 
             grp[f"{metric}_baseline_mean"] = means
             grp[f"{metric}_baseline_std"]  = stds
@@ -234,8 +243,12 @@ def print_anomalies(
     df: pd.DataFrame,
     window: int,
     threshold: float,
+    min_pct_margin: float = ANOMALY_MIN_PCT_MARGIN,
 ) -> list[dict]:
-    section(f"ANOMALİ TESPİTLERİ  (pencere: son {window} seans, eşik: ±{threshold} std)")
+    section(
+        f"ANOMALİ TESPİTLERİ  (pencere: son {window} seans, "
+        f"eşik: ±{threshold} std, min marj: %{min_pct_margin})"
+    )
 
     found = []
 
@@ -366,6 +379,8 @@ def main():
                         help=f"Baseline penceresi, seans sayısı (varsayılan: {ANOMALY_WINDOW})")
     parser.add_argument("--threshold", type=float, default=ANOMALY_THRESHOLD,
                         help=f"Z-score eşiği, ± std (varsayılan: {ANOMALY_THRESHOLD})")
+    parser.add_argument("--min-pct-margin", type=float, default=ANOMALY_MIN_PCT_MARGIN,
+                        help=f"Minimum pratik %% sapma marjı (varsayılan: {ANOMALY_MIN_PCT_MARGIN})")
     parser.add_argument("--patient-id", default=None, help="Tek hasta filtrele")
     args = parser.parse_args()
 
@@ -375,6 +390,9 @@ def main():
     if not (0.1 <= args.threshold <= 10.0):
         print(f"{C.RED}[HATA] --threshold 0.1–10.0 arasında olmalı (verilen: {args.threshold}){C.RESET}")
         sys.exit(1)
+    if not (0.0 <= args.min_pct_margin <= 100.0):
+        print(f"{C.RED}[HATA] --min-pct-margin 0-100 arasında olmalı (verilen: {args.min_pct_margin}){C.RESET}")
+        sys.exit(1)
 
     print(f"\n{C.BOLD}{C.CYAN}"
           f"──────────────────────────────────────────────────\n"
@@ -383,20 +401,24 @@ def main():
           f"{C.RESET}")
 
     df        = load_data(args.input, args.patient_id)
-    df        = detect_anomalies(df, args.window, args.threshold)
+    df        = detect_anomalies(df, args.window, args.threshold, args.min_pct_margin)
 
     print_summary(df)
-    anomalies = print_anomalies(df, args.window, args.threshold)
+    anomalies = print_anomalies(df, args.window, args.threshold, args.min_pct_margin)
     print_trend(df)
 
     section("ANALİZ TAMAMLANDI")
     color = C.RED if anomalies else C.GREEN
     print(f"  {color}{C.BOLD}Toplam anomali: {len(anomalies)}{C.RESET}")
-    print(f"  Pencere: son {args.window} seans  |  Eşik: ±{args.threshold} std  |  Yöntem: rolling z-score\n")
+    print(
+        f"  Pencere: son {args.window} seans  |  Eşik: ±{args.threshold} std  |  "
+        f"Min marj: %{args.min_pct_margin}  |  Yöntem: rolling z-score\n"
+    )
 
     if args.output:
         save_json(df, anomalies,
-                  f"rolling_zscore_window_{args.window}_threshold_{args.threshold}",
+                  f"rolling_zscore_window_{args.window}_threshold_{args.threshold}"
+                  f"_minpct_{args.min_pct_margin}",
                   args.output)
 
     return 1 if anomalies else 0

@@ -42,16 +42,36 @@ Servis çalışırken: http://localhost:8000/docs
 ## Örnek Kullanım
 
 ```bash
-# CSV ile analiz
-curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0" \
+# CSV ile analiz (seans bazlı anlık z-score anomalisi)
+curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0&min_pct_margin=10.0" \
      -F "file=@data/mock_patient_session_analysis_biological.csv"
 
-# Tek hasta trend
-curl "http://localhost:8000/trend/PATIENT-UUID"
+# Tek hasta trend (pencere bazlı yön tespiti)
+curl "http://localhost:8000/trend/PATIENT-UUID?window_size=3&sigma_mult=2.0&min_pct_margin=10.0"
 
 # Klinik referans eşikleri
 curl "http://localhost:8000/thresholds"
 ```
+
+---
+
+## `/analyze` vs `/trend` — Ne Zaman Hangisi?
+
+Bu servis iki farklı amaç için iki ayrı istatistiksel yöntem kullanır — aynı
+hasta için farklı sonuç vermeleri **beklenen bir durumdur**, çünkü farklı
+sorulara cevap verirler:
+
+| | `/analyze` | `/trend` |
+|---|---|---|
+| **Soru** | "Bu tek seans, son birkaç seansa göre istatistiksel olarak sıra dışı mı?" | "Bu hasta gerçekten iyileşiyor mu / kötüleşiyor mu?" |
+| **Yöntem** | Rolling z-score, sabit pencere, **tek seans** karşılaştırması | Pencere ortalaması karşılaştırması (`recent_avg` vs `previous_avg`) |
+| **Kullanım amacı** | Ham veri kalite kontrolü — ölçüm hatası, tek seferlik sıçrama, veri girişi hatası yakalamak | Klinik olarak anlamlı sinyal — **asıl kullanıcıya (hasta/klinisyen) gösterilecek yön budur** |
+| **Gürültüye duyarlılık** | Yüksek (tek nokta) | Düşük (pencere ortalaması + istatistiksel/pratik çift eşik) |
+
+Kısacası: `/analyze` sonucu "bu seansta garip bir şey var" derken, `/trend`
+sonucu "genel olarak durum böyle" der. Dashboard'da kullanıcıya birincil
+olarak `/trend` gösterilmeli; `/analyze` daha çok veri kalitesi / debug amaçlı
+bir katmandır.
 
 ---
 
@@ -77,8 +97,11 @@ Her **hasta × bölge × metrik** kombinasyonu için şu adımlar uygulanır:
    z = (mevcut_değer - baseline_mean) / baseline_std
    ```
 
-4. `|z| > threshold` → **ANOMALİ** — hem artış (`direction=high`) hem düşüş
-   (`direction=low`) yakalanır.
+4. Ayrıca pratik sapma hesaplanır: `pct_deviation = |mevcut_değer - baseline_mean| / baseline_mean × 100`
+
+5. **ANOMALİ** için HEM `|z| > threshold` HEM `pct_deviation > min_pct_margin`
+   gerekir — istatistiksel VE pratik anlamlılık birlikte aranır. Hem artış
+   (`direction=high`) hem düşüş (`direction=low`) yakalanır.
 
 Sabit pencere bilinçli bir tercih: tüm geçmişi kullanan (expanding) bir
 baseline, ya bir sıçramanın std'yi şişirip sonraki gerçek anomalileri
@@ -87,12 +110,18 @@ donup kalmasına ve sürekli trend değişikliklerinde sonsuz alarm üretmesine 
 açıyor. Sabit pencere, eski seansları zamanla kendiliğinden düşürerek ikisini
 de önler.
 
+`min_pct_margin` da bilinçli bir tercih: çok düşük varyanslı (stabil) bir
+hastada ufak, pratikte önemsiz bir sapma bile std çok küçük olduğu için
+istatistiksel olarak dev bir z-score üretebilir. Pratik % eşiği, bu tür
+"istatistiksel olarak anlamlı ama klinik olarak önemsiz" durumları eler.
+
 **Parametreler:**
 
 | Parametre | Varsayılan | Açıklama |
 |-----------|-----------|----------|
 | `window` | `3` | Baseline penceresi (seans sayısı) |
 | `threshold` | `2.0` | Z-score eşiği (± std) |
+| `min_pct_margin` | `10.0` | Minimum pratik % sapma marjı |
 
 Toplam seans sayısı `window`'dan az olan (hasta, bölge) grupları için
 `direction="insufficient_data"` döner, anomali hesaplanmaz.
@@ -104,6 +133,7 @@ Toplam seans sayısı `window`'dan az olan (hasta, bölge) grupları için
 | `baseline_mean`, `baseline_std` | Pencere istatistikleri |
 | `z_score` | Hesaplanan z-score |
 | `direction` | `high` / `low` / `insufficient_data` |
+| `severity` | `heavy` / `medium` / `light` — yalnızca anomali=true satırlarda |
 
 **Analiz edilen metrikler:**
 
@@ -112,30 +142,47 @@ Toplam seans sayısı `window`'dan az olan (hasta, bölge) grupları için
 
 ---
 
-### 2. Trend Analizi (Son Seans Deltası + Lineer Regresyon)
+### 2. Trend Analizi (Pencere Ortalaması Karşılaştırması + Lineer Regresyon)
 
 Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar uygulanır:
 
 1. Seanslar `session_date`'e göre kronolojik sıraya dizilir.
-2. **Yön (`direction`)**, son iki seans arasındaki yoğunluk (`hair_density_hairs_cm2`) farkının yüzdesine göre belirlenir:
+2. Toplam seans sayısı `n >= window_size * 2` ise **pencere bazlı** karşılaştırma yapılır:
 
    ```
-   delta_density_pct = (son_seans - önceki_seans) / önceki_seans × 100
+   recent_avg   = son window_size seansın ortalaması
+   previous_avg = bir önceki window_size seansın ortalaması
+   pooled_std   = recent + previous birleşik verinin std'si (ddof=1)
+   band         = max(sigma_mult * pooled_std, |previous_avg| * min_pct_margin / 100)
    ```
 
-   - `delta_density_pct > threshold_pct` → **Increasing**
-   - `delta_density_pct < -threshold_pct` → **Decreasing**
+   - `(recent_avg - previous_avg) > band` → **Increasing**
+   - `(previous_avg - recent_avg) > band` → **Decreasing**
    - Aksi durumda → **Stable**
+   - `confidence = "high"`
 
-3. Ayrıca bilgilendirme amaçlı tüm seanslara `scipy.stats.linregress` ile lineer regresyon uygulanır — **`direction` kararına katılmaz**, sadece raporlamaya eklenir.
+   Bant hesabı (Grafana margin-band mantığı) hem istatistiksel (sigma) hem
+   pratik (%) anlamlılığı birlikte arar — tek nokta farkının gürültüye
+   duyarlılığını azaltır. Aynı pencere mantığı `delta_thickness` için de
+   ayrıca uygulanır (`thickness_recent_avg` / `thickness_previous_avg` /
+   `thickness_window_pct_change`).
+
+3. `n < window_size * 2` (ama `n >= 2`) ise pencere için yeterli veri yoktur;
+   eski **son-iki-seans delta** mantığına fallback yapılır
+   (`delta_density_pct > threshold_pct` → Increasing, vb.) ve `confidence = "low"` döner.
+
+4. Ayrıca bilgilendirme amaçlı tüm seanslara `scipy.stats.linregress` ile lineer regresyon uygulanır — **`direction` kararına katılmaz**, sadece raporlamaya eklenir.
 
 **Çıktı değerleri:**
 
 | Çıktı | Açıklama |
 |-------|----------|
-| `direction` | `Increasing` / `Decreasing` / `Stable` (yukarıdaki delta kuralına göre) |
-| `delta_density`, `delta_density_pct` | Son iki seans arası yoğunluk farkı |
+| `direction` | `Increasing` / `Decreasing` / `Stable` |
+| `confidence` | `high` (pencere bazlı) / `low` (son-2-seans fallback) |
+| `delta_density`, `delta_density_pct` | Son iki seans arası yoğunluk farkı (her zaman hesaplanır, bilgi amaçlı) |
+| `recent_avg`, `previous_avg`, `window_pct_change` | Pencere bazlı karşılaştırma (yalnızca `confidence="high"` iken dolu) |
 | `delta_thickness`, `delta_thickness_pct` | Son iki seans arası kalınlık farkı |
+| `thickness_recent_avg`, `thickness_previous_avg`, `thickness_window_pct_change` | Kalınlık için pencere bazlı karşılaştırma |
 | `delta_terminal_pct` | Son iki seans arası Terminal saç yüzdesi farkı |
 | `slope`, `slope_pct` | Regresyon eğimi (bilgi amaçlı) |
 | `r_squared`, `p_value`, `is_significant` | Regresyonun istatistiksel değerleri (bilgi amaçlı) |
@@ -145,7 +192,16 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
 | `projected_tv_ratio` | Occipital T/V oranından bölgeye projekte edilen beklenen T/V |
 | `aga_comparison` | Bölgenin Advanced AGA referanslarıyla karşılaştırması |
 
-Minimum `2` seans olmadan delta/regresyon hesaplanmaz; `direction` varsayılan olarak `Stable`, diğer alanlar `null` döner.
+**Parametreler:**
+
+| Parametre | Varsayılan | Açıklama |
+|-----------|-----------|----------|
+| `window_size` | `3` | Pencere karşılaştırması için seans sayısı |
+| `sigma_mult` | `2.0` | Bant genişliği için std çarpanı |
+| `min_pct_margin` | `10.0` | Bant genişliği için minimum pratik % marj |
+| `threshold_pct` | `10.0` | Yalnızca fallback (n < window_size*2) durumunda kullanılır |
+
+Minimum `2` seans olmadan delta/regresyon hiç hesaplanmaz; `direction` varsayılan olarak `Stable`, diğer alanlar `null` döner.
 
 ---
 

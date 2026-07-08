@@ -62,19 +62,19 @@ def _load(file_bytes: bytes) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def _analyze(df: pd.DataFrame, pid: str, threshold: float) -> pd.DataFrame:
+def _analyze(df: pd.DataFrame, pid: str, threshold: float, min_pct_margin: float) -> pd.DataFrame:
     pat = df[df["patient_id"] == pid].copy()
     if pat.empty:
         return pat
-    return detect_anomalies(pat, window=ANOMALY_WINDOW, threshold=threshold)
+    return detect_anomalies(pat, window=ANOMALY_WINDOW, threshold=threshold, min_pct_margin=min_pct_margin)
 
 
 @st.cache_data(show_spinner=False)
-def _clinical_trend(df: pd.DataFrame, pid: str) -> dict | None:
+def _clinical_trend(df: pd.DataFrame, pid: str, min_pct_margin: float) -> dict | None:
     required = {"patient_id", "session_date", "region", "hair_density_hairs_cm2", "hair_thickness_um", "hair_type"}
     if not required.issubset(df.columns):
         return None
-    return analyze_patient_trend(df, pid)
+    return analyze_patient_trend(df, pid, min_pct_margin=min_pct_margin)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -113,6 +113,11 @@ with st.sidebar:
         min_value=1.0, max_value=4.0, value=2.0, step=0.1,
     )
 
+    min_pct_margin = st.slider(
+        "Minimum Anlamlı Değişim (%)",
+        min_value=1.0, max_value=30.0, value=10.0, step=0.5,
+    )
+
     if selected_pid is None:
         st.info("Devam etmek için bir hasta seçin.")
         st.stop()
@@ -120,8 +125,8 @@ with st.sidebar:
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
-df = _analyze(df_raw, selected_pid, threshold)
-clinical_trend = _clinical_trend(df_raw, selected_pid)
+df = _analyze(df_raw, selected_pid, threshold, min_pct_margin)
+clinical_trend = _clinical_trend(df_raw, selected_pid, min_pct_margin)
 
 # Session dates that have at least one anomaly (any region, any metric)
 _omask = pd.Series(False, index=df.index)
@@ -205,12 +210,16 @@ def _render_chart(metric: str, label: str) -> None:
             hovertemplate=f"<b>{region}</b><br>%{{x|%d %b %Y}}: %{{y}}<extra></extra>",
         ))
 
-        # Baseline band
+        # Baseline band — istatistiksel (threshold*std) VE pratik (%marj) bandının büyüğü
         if bm_col in grp.columns:
             bg = grp[grp[bm_col].notna()]
             if not bg.empty:
-                upper = bg[bm_col] + threshold * bg[bs_col].fillna(0)
-                lower = bg[bm_col] - threshold * bg[bs_col].fillna(0)
+                band = np.maximum(
+                    threshold * bg[bs_col].fillna(0),
+                    bg[bm_col].abs() * (min_pct_margin / 100.0),
+                )
+                upper = bg[bm_col] + band
+                lower = bg[bm_col] - band
                 fig.add_trace(go.Scatter(
                     x=bg["session_date"], y=upper,
                     mode="lines", line=dict(width=0),
@@ -336,6 +345,7 @@ else:
         clinical_rows.append({
             "Bölge": region["region"],
             "Yön": region["direction"],
+            "Güven": region.get("confidence"),
             "Yoğunluk Δ%": region["delta_density_pct"],
             "Kalınlık Δ%": region["delta_thickness_pct"],
             "Saç Tipi": region.get("hair_type_classification"),
@@ -426,4 +436,4 @@ if rows:
         hide_index=True,
     )
 else:
-    st.success(f"✓ Seçilen eşik (±{threshold:.1f} std) için outlier bulunamadı.")
+    st.success(f"✓ Seçilen eşik (±{threshold:.1f} std, min %{min_pct_margin:.1f}) için outlier bulunamadı.")
