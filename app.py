@@ -70,11 +70,21 @@ def _analyze(df: pd.DataFrame, pid: str, threshold: float, min_pct_margin: float
 
 
 @st.cache_data(show_spinner=False)
-def _clinical_trend(df: pd.DataFrame, pid: str, min_pct_margin: float) -> dict | None:
+def _clinical_trend(
+    df: pd.DataFrame,
+    pid: str,
+    fallback_pct: float,
+    calibration_size: int,
+) -> dict | None:
     required = {"patient_id", "session_date", "region", "hair_density_hairs_cm2", "hair_thickness_um", "hair_type"}
     if not required.issubset(df.columns):
         return None
-    return analyze_patient_trend(df, pid, min_pct_margin=min_pct_margin)
+    return analyze_patient_trend(
+        df,
+        pid,
+        fallback_pct=fallback_pct,
+        calibration_size=calibration_size,
+    )
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -114,8 +124,13 @@ with st.sidebar:
     )
 
     min_pct_margin = st.slider(
-        "Minimum Anlamlı Değişim (%)",
+        "Minimum Anlamlı Değişim / AGA Fallback (%)",
         min_value=1.0, max_value=30.0, value=ANOMALY_MIN_PCT_MARGIN, step=0.1,
+    )
+
+    calibration_size = st.slider(
+        "Kişisel Kalibrasyon Seansı",
+        min_value=2, max_value=12, value=6, step=1,
     )
 
     if selected_pid is None:
@@ -126,7 +141,7 @@ with st.sidebar:
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
 df = _analyze(df_raw, selected_pid, threshold, min_pct_margin)
-clinical_trend = _clinical_trend(df_raw, selected_pid, min_pct_margin)
+clinical_trend = _clinical_trend(df_raw, selected_pid, min_pct_margin, calibration_size)
 
 # Session dates that have at least one anomaly (any region, any metric)
 _omask = pd.Series(False, index=df.index)
@@ -342,10 +357,16 @@ else:
     for region in clinical_trend["regions"]:
         tv_status = region.get("tv_status") or {}
         aga = region.get("aga_comparison") or {}
+        margin_source = region.get("margin_source")
+        calibration_status = "✓" if margin_source == "personal_calibration" else "⏳"
         clinical_rows.append({
             "Bölge": region["region"],
             "Yön": region["direction"],
             "Güven": region.get("confidence"),
+            "Kalibrasyon": calibration_status,
+            "Marj Kaynağı": margin_source,
+            "Marj %": region.get("min_pct_margin_used"),
+            "Kalibrasyon N": region.get("calibration_points_used"),
             "Yoğunluk Δ%": region["delta_density_pct"],
             "Kalınlık Δ%": region["delta_thickness_pct"],
             "Saç Tipi": region.get("hair_type_classification"),

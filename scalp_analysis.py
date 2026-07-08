@@ -34,14 +34,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from clinical_thresholds import AGA_DERIVED_MIN_PCT_MARGIN
+from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN
 
 
 # ─── Sabitler ────────────────────────────────────────────────────────────────
 
 ANOMALY_WINDOW         = 3     # rolling baseline penceresi (son N seans, mevcut haric)
 ANOMALY_THRESHOLD      = 2.0   # +/- std esigi
-ANOMALY_MIN_PCT_MARGIN = AGA_DERIVED_MIN_PCT_MARGIN
+ANOMALY_MIN_PCT_MARGIN = FALLBACK_MIN_PCT_MARGIN
 # Minimum pratik % sapma AGA referans tablosundan turetilir; bunun altindaki
 # degisim istatistiksel olarak z esigini assa bile anomali sayilmaz.
 

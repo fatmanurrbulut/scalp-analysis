@@ -96,6 +96,9 @@ class RegionTrendRecord(BaseModel):
     region:             str
     direction:          str
     confidence:         str | None = None
+    min_pct_margin_used: float | None = None
+    margin_source:      str | None = None
+    calibration_points_used: int | None = None
     delta_density:      float | None
     delta_density_pct:  float | None
     recent_avg:         float | None = None
@@ -425,9 +428,13 @@ async def trend_patient(
     min_pct_margin: float = Query(
         default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
         description=(
-            "Bant genişliği için minimum pratik % marj "
-            f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN}, AGA referans tablosundan türetilir)"
+            "Kişisel kalibrasyon için yeterli veri yokken kullanılan AGA fallback % marjı "
+            f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN})"
         ),
+    ),
+    calibration_size: int = Query(
+        default=6, ge=2, le=30,
+        description="Kişisel marj kalibrasyonu için kullanılan ilk seans sayısı (varsayılan: 6)",
     ),
 ) -> PatientTrendResponse:
     """
@@ -439,9 +446,11 @@ async def trend_patient(
     - `direction`: Increasing / Decreasing / Stable — son `window_size` seansın
       ortalaması (recent_avg), önceki `window_size` seansın ortalamasıyla
       (previous_avg) karşılaştırılarak belirlenir. Bant = max(sigma_mult *
-      pooled_std, previous_avg * min_pct_margin/100).
+      pooled_std, previous_avg * personal_margin/100).
     - `confidence`: "high" (pencere için yeterli veri var) / "low" (n < window_size*2,
       eski son-iki-seans delta mantığına fallback yapıldı)
+    - `min_pct_margin_used / margin_source / calibration_points_used`: yön hesabında
+      kullanılan kişisel kalibrasyon veya AGA fallback marjı
     - `delta_density / delta_density_pct`: son seans – önceki seans farkı (bilgi amaçlı)
     - `recent_avg / previous_avg / window_pct_change`: pencere bazlı karşılaştırma
     - `delta_thickness / delta_thickness_pct` ve `thickness_recent_avg / ...`: kalınlık için aynı mantık
@@ -470,7 +479,13 @@ async def trend_patient(
 
     try:
         result = analyze_patient_trend(
-            df, patient_id, threshold_pct, window_size, sigma_mult, min_pct_margin
+            df,
+            patient_id,
+            threshold_pct,
+            window_size,
+            sigma_mult,
+            min_pct_margin,
+            calibration_size,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -501,9 +516,13 @@ async def trend(
     min_pct_margin: float = Query(
         default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
         description=(
-            "Bant genişliği için minimum pratik % marj "
-            f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN}, AGA referans tablosundan türetilir)"
+            "Kişisel kalibrasyon için yeterli veri yokken kullanılan AGA fallback % marjı "
+            f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN})"
         ),
+    ),
+    calibration_size: int = Query(
+        default=6, ge=2, le=30,
+        description="Kişisel marj kalibrasyonu için kullanılan ilk seans sayısı (varsayılan: 6)",
     ),
 ) -> ClinicTrendResponse:
     """
@@ -524,6 +543,8 @@ async def trend(
     - `avg_density / avg_thickness / avg_terminal_pct …`: tüm hastalar ortalaması
     - `region_highest_improvement / region_highest_deterioration`: ortalama delta_density_pct'e göre
     - `improving_patients / worsening_patients / stable_patients`: hasta sayıları
+    - `patients[].regions[]`: her bölge için `margin_source` ve
+      `calibration_points_used` bilgisi
     - `patients`: her hasta için ayrı `PatientTrendResponse`
     """
     content_type = request.headers.get("content-type", "")
@@ -557,7 +578,14 @@ async def trend(
         )
 
     _validate_bio_df(df)
-    result = analyze_clinic_trend(df, threshold_pct, window_size, sigma_mult, min_pct_margin)
+    result = analyze_clinic_trend(
+        df,
+        threshold_pct,
+        window_size,
+        sigma_mult,
+        min_pct_margin,
+        calibration_size,
+    )
 
     return ClinicTrendResponse(
         generated_at=datetime.now(timezone.utc).isoformat(),

@@ -164,7 +164,9 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
                   (grup-içi varyansların klasik pooled-variance birleşimi —
                    recent+previous'ı tek diziye birleştirip düz std almak
                    YANLIŞTIR: bu, aradaki trendi gürültü sayıp bandı şişirir)
-   band         = max(sigma_mult * pooled_std, |previous_avg| * min_pct_margin / 100)
+   personal_margin = ilk calibration_size seansın CV%'si
+                     (yeterli veri yoksa AGA fallback: %10.7)
+   band            = max(sigma_mult * pooled_std, |previous_avg| * personal_margin / 100)
    ```
 
    - `(recent_avg - previous_avg) > band` → **Increasing**
@@ -174,9 +176,12 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
 
    Bant hesabı (Grafana margin-band mantığı) hem istatistiksel (sigma) hem
    pratik (%) anlamlılığı birlikte arar — tek nokta farkının gürültüye
-   duyarlılığını azaltır. Aynı pencere mantığı `delta_thickness` için de
-   ayrıca uygulanır (`thickness_recent_avg` / `thickness_previous_avg` /
-   `thickness_window_pct_change`).
+   duyarlılığını azaltır. Pratik marj artık bölgeye özel kişisel
+   kalibrasyondan gelir: yeterli veri varsa ilk `calibration_size` seanstaki
+   CV% kullanılır, yeterli veri yoksa AGA tablosundan türetilen `%10.7` sadece
+   geçici fallback olarak kullanılır. Aynı pencere mantığı `delta_thickness`
+   için de ayrıca uygulanır (`thickness_recent_avg` /
+   `thickness_previous_avg` / `thickness_window_pct_change`).
 
 3. `n < window_size * 2` (ama `n >= 2`) ise pencere için yeterli veri yoktur;
    eski **son-iki-seans delta** mantığına fallback yapılır
@@ -190,6 +195,9 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
 |-------|----------|
 | `direction` | `Increasing` / `Decreasing` / `Stable` |
 | `confidence` | `high` (pencere bazlı) / `low` (son-2-seans fallback) |
+| `min_pct_margin_used` | Bu bölgenin trend bandında kullanılan kişisel/fallback % marj |
+| `margin_source` | `personal_calibration` veya `aga_reference_fallback` |
+| `calibration_points_used` | Marj hesabına giren kalibrasyon seansı sayısı |
 | `delta_density`, `delta_density_pct` | Son iki seans arası yoğunluk farkı (her zaman hesaplanır, bilgi amaçlı) |
 | `recent_avg`, `previous_avg`, `window_pct_change` | Pencere bazlı karşılaştırma (yalnızca `confidence="high"` iken dolu) |
 | `delta_thickness`, `delta_thickness_pct` | Son iki seans arası kalınlık farkı |
@@ -209,7 +217,8 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
 |-----------|-----------|----------|
 | `window_size` | `3` | Pencere karşılaştırması için seans sayısı |
 | `sigma_mult` | `2.0` | Bant genişliği için std çarpanı |
-| `min_pct_margin` | `10.7` | AGA referans tablosundan türetilen bant genişliği için minimum pratik % marj |
+| `min_pct_margin` | `10.7` | Yeterli kişisel veri yokken kullanılan AGA fallback % marjı |
+| `calibration_size` | `6` | Kişisel marj kalibrasyonu için kullanılan ilk seans sayısı |
 | `threshold_pct` | `10.0` | Yalnızca fallback (n < window_size*2) durumunda kullanılır |
 
 Minimum `2` seans olmadan delta/regresyon hiç hesaplanmaz; `direction` varsayılan olarak `Stable`, diğer alanlar `null` döner.

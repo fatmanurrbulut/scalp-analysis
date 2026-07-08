@@ -107,11 +107,16 @@ ADVANCED_AGA_REFERENCE: dict[str, dict] = {
 }
 
 
-def derive_min_pct_margin_from_aga_reference(
+def compute_aga_fallback_margin(
     reference: dict[str, dict] = ADVANCED_AGA_REFERENCE,
 ) -> float:
     """
-    Minimum pratik yüzde marjını AGA referans tablosundan türetir.
+    AGA referans tablosundan geçici fallback minimum yüzde marjını türetir.
+
+    UYARI: bu değer bölgeler arası anatomik farklılıktan türetilmiştir,
+    hastaya özel zamansal gürültüyü temsil ETMEZ. Sadece yeterli kişisel veri
+    birikene kadar (bkz. trend_analysis.compute_personal_margin) geçici
+    fallback olarak kullanılır.
 
     Yoğunluk ve çap klinik olarak aynı trend/anomali akışında kullanılan iki
     ana metriktir. T/V oranı ölçek olarak daha oynak olduğu için bu varsayılanı
@@ -131,7 +136,12 @@ def derive_min_pct_margin_from_aga_reference(
     return round(avg_cv_pct * 0.5, 1)
 
 
-AGA_DERIVED_MIN_PCT_MARGIN = derive_min_pct_margin_from_aga_reference()
+# UYARI: bu değer bölgeler arası anatomik farklılıktan türetilmiştir, hastaya
+# özel zamansal gürültüyü temsil ETMEZ. Sadece yeterli kişisel veri birikene
+# kadar (bkz. trend_analysis.compute_personal_margin) geçici fallback olarak
+# kullanılır.
+FALLBACK_MIN_PCT_MARGIN = compute_aga_fallback_margin()
+AGA_DERIVED_MIN_PCT_MARGIN = FALLBACK_MIN_PCT_MARGIN
 
 
 # ─── Fonksiyonlar ─────────────────────────────────────────────────────────────
@@ -330,7 +340,12 @@ def get_all_thresholds() -> dict:
         "tv_rho_factors":        TV_RHO_FACTORS,
         "advanced_aga_reference": ADVANCED_AGA_REFERENCE,
         "derived_defaults": {
-            "min_pct_margin": AGA_DERIVED_MIN_PCT_MARGIN,
+            "min_pct_margin": FALLBACK_MIN_PCT_MARGIN,
             "method": "0.5 * mean(CV%(AGA density), CV%(AGA diameter_um))",
+            "warning": (
+                "Bölgeler arası anatomik farklılıktan türetilmiştir; hastaya "
+                "özel zamansal gürültüyü temsil etmez. Yeterli kişisel veri "
+                "birikene kadar geçici fallback olarak kullanılır."
+            ),
         },
     }
