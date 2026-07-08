@@ -6,8 +6,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from clinical_thresholds import get_all_thresholds
-from scalp_analysis import ANOMALY_MIN_PCT_MARGIN, ANOMALY_WINDOW, detect_anomalies
+from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN, get_all_thresholds
+from scalp_analysis import ANOMALY_WINDOW, detect_anomalies
 from trend_analysis import analyze_patient_trend
 
 st.set_page_config(
@@ -62,11 +62,22 @@ def _load(file_bytes: bytes) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def _analyze(df: pd.DataFrame, pid: str, threshold: float, min_pct_margin: float) -> pd.DataFrame:
+def _analyze(
+    df: pd.DataFrame,
+    pid: str,
+    threshold: float,
+    calibration_size: int,
+    floor_pct: float,
+    fallback_pct: float,
+) -> pd.DataFrame:
     pat = df[df["patient_id"] == pid].copy()
     if pat.empty:
         return pat
-    return detect_anomalies(pat, window=ANOMALY_WINDOW, threshold=threshold, min_pct_margin=min_pct_margin)
+    return detect_anomalies(
+        pat, window=ANOMALY_WINDOW, threshold=threshold,
+        use_personal_calibration=True,
+        calibration_size=calibration_size, floor_pct=floor_pct, fallback_pct=fallback_pct,
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -75,6 +86,7 @@ def _clinical_trend(
     pid: str,
     fallback_pct: float,
     calibration_size: int,
+    floor_pct: float,
 ) -> dict | None:
     required = {"patient_id", "session_date", "region", "hair_density_hairs_cm2", "hair_thickness_um", "hair_type"}
     if not required.issubset(df.columns):
@@ -84,6 +96,7 @@ def _clinical_trend(
         pid,
         fallback_pct=fallback_pct,
         calibration_size=calibration_size,
+        floor_pct=floor_pct,
     )
 
 
@@ -123,14 +136,19 @@ with st.sidebar:
         min_value=1.0, max_value=4.0, value=2.0, step=0.1,
     )
 
-    min_pct_margin = st.slider(
-        "Minimum Anlamlı Değişim / AGA Fallback (%)",
-        min_value=1.0, max_value=30.0, value=ANOMALY_MIN_PCT_MARGIN, step=0.1,
-    )
-
     calibration_size = st.slider(
         "Kişisel Kalibrasyon Seansı",
         min_value=2, max_value=12, value=6, step=1,
+    )
+
+    floor_pct = st.slider(
+        "Taban Marj (%) — çok stabil hastalarda minimum",
+        min_value=1.0, max_value=10.0, value=3.0, step=0.5,
+    )
+
+    fallback_pct = st.slider(
+        "AGA Fallback (%) — yetersiz veri durumunda",
+        min_value=5.0, max_value=30.0, value=FALLBACK_MIN_PCT_MARGIN, step=0.1,
     )
 
     if selected_pid is None:
@@ -140,8 +158,8 @@ with st.sidebar:
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
-df = _analyze(df_raw, selected_pid, threshold, min_pct_margin)
-clinical_trend = _clinical_trend(df_raw, selected_pid, min_pct_margin, calibration_size)
+df = _analyze(df_raw, selected_pid, threshold, calibration_size, floor_pct, fallback_pct)
+clinical_trend = _clinical_trend(df_raw, selected_pid, fallback_pct, calibration_size, floor_pct)
 
 # Session dates that have at least one anomaly (any region, any metric)
 _omask = pd.Series(False, index=df.index)
@@ -203,11 +221,12 @@ def _render_chart(metric: str, label: str) -> None:
         st.warning("En az bir bölge seçin.")
         return
 
-    bm_col   = f"{metric}_baseline_mean"
-    bs_col   = f"{metric}_baseline_std"
-    z_col    = f"{metric}_z"
-    flag_col = f"{metric}_is_anomaly"
-    fig      = go.Figure()
+    bm_col     = f"{metric}_baseline_mean"
+    bs_col     = f"{metric}_baseline_std"
+    z_col      = f"{metric}_z"
+    flag_col   = f"{metric}_is_anomaly"
+    margin_col = f"{metric}_margin_used"
+    fig        = go.Figure()
 
     for idx, region in enumerate(selected):
         color      = PALETTE[idx % len(PALETTE)]
@@ -225,13 +244,17 @@ def _render_chart(metric: str, label: str) -> None:
             hovertemplate=f"<b>{region}</b><br>%{{x|%d %b %Y}}: %{{y}}<extra></extra>",
         ))
 
-        # Baseline band — istatistiksel (threshold*std) VE pratik (%marj) bandının büyüğü
+        # Baseline band — istatistiksel (threshold*std) VE pratik (%marj) bandının büyüğü.
+        # %marj artık sabit değil: her satırın kendi kişisel kalibrasyon/fallback
+        # marjından (margin_col) geliyor — bölgeden bölgeye, kalibrasyon ilerledikçe
+        # değişebilir, bu yüzden düz bir çizgi değil, daralıp genişleyen bir bant olabilir.
         if bm_col in grp.columns:
             bg = grp[grp[bm_col].notna()]
             if not bg.empty:
+                pct_margin = bg[margin_col] if margin_col in bg.columns else fallback_pct
                 band = np.maximum(
                     threshold * bg[bs_col].fillna(0),
-                    bg[bm_col].abs() * (min_pct_margin / 100.0),
+                    bg[bm_col].abs() * (pct_margin / 100.0),
                 )
                 upper = bg[bm_col] + band
                 lower = bg[bm_col] - band
@@ -421,11 +444,13 @@ for metric, label in METRICS.items():
     if flag_col not in df.columns:
         continue
     for _, row in df[df[flag_col]].iterrows():
-        z         = row.get(f"{metric}_z", np.nan)
-        bm        = row.get(f"{metric}_baseline_mean", np.nan)
-        direction = row.get(f"{metric}_direction")
-        severity  = row.get(f"{metric}_severity")
-        val       = float(row[metric])
+        z             = row.get(f"{metric}_z", np.nan)
+        bm            = row.get(f"{metric}_baseline_mean", np.nan)
+        direction     = row.get(f"{metric}_direction")
+        severity      = row.get(f"{metric}_severity")
+        margin_used   = row.get(f"{metric}_margin_used")
+        margin_source = row.get(f"{metric}_margin_source")
+        val           = float(row[metric])
         rows.append({
             "Hasta":         f"{row['first_name']} {row['last_name']}",
             "Bölge":         row["region"],
@@ -436,6 +461,8 @@ for metric, label in METRICS.items():
             "Z-score":       round(float(z),  2) if pd.notna(z)  else "—",
             "Yön":           "↑ Yüksek" if direction == "high" else "↓ Düşük",
             "Severity":      severity.upper() if severity else "—",
+            "Marj %":        margin_used,
+            "Marj Kaynağı":  margin_source,
         })
 
 if rows:
@@ -457,4 +484,7 @@ if rows:
         hide_index=True,
     )
 else:
-    st.success(f"✓ Seçilen eşik (±{threshold:.1f} std, min %{min_pct_margin:.1f}) için outlier bulunamadı.")
+    st.success(
+        f"✓ Seçilen eşik (±{threshold:.1f} std, kişisel kalibrasyon: ilk {calibration_size} seans, "
+        f"taban %{floor_pct:.1f}) için outlier bulunamadı."
+    )

@@ -35,6 +35,7 @@ import numpy as np
 import pandas as pd
 
 from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN
+from margin_utils import compute_personal_margin
 
 
 # ─── Sabitler ────────────────────────────────────────────────────────────────
@@ -124,6 +125,10 @@ def detect_anomalies(
     window: int = ANOMALY_WINDOW,
     threshold: float = ANOMALY_THRESHOLD,
     min_pct_margin: float = ANOMALY_MIN_PCT_MARGIN,
+    use_personal_calibration: bool = True,
+    calibration_size: int = 6,
+    floor_pct: float = 3.0,
+    fallback_pct: float = FALLBACK_MIN_PCT_MARGIN,
 ) -> pd.DataFrame:
     """
     Her (patient_id, region, metric) grubu için:
@@ -131,10 +136,22 @@ def detect_anomalies(
         (sabit boyutlu pencere — tüm geçmiş değil)
       - z = (değer - baseline_mean) / baseline_std
       - pct_deviation = |değer - baseline_mean| / baseline_mean * 100
-      - ANOMALİ için HEM |z| > threshold HEM pct_deviation > min_pct_margin
-        gerekir (istatistiksel + pratik anlamlılık birlikte aranır). Böylece
-        çok düşük varyanslı (stabil) hastalarda, istatistiksel olarak eşiği
-        aşan ama pratikte önemsiz küçük sapmalar anomali sayılmaz.
+      - ANOMALİ için HEM |z| > threshold HEM pct_deviation > margin gerekir
+        (istatistiksel + pratik anlamlılık birlikte aranır). Böylece çok düşük
+        varyanslı (stabil) hastalarda, istatistiksel olarak eşiği aşan ama
+        pratikte önemsiz küçük sapmalar anomali sayılmaz.
+
+    `margin` kaynağı `use_personal_calibration`'a göre değişir:
+      - True (varsayılan): her (patient_id, region, metric) için
+        margin_utils.compute_personal_margin() ile hastanın kendi ilk
+        `calibration_size` seansındaki CV%'sinden hesaplanır (taban: `floor_pct`,
+        yeterli veri yoksa geçici `fallback_pct`) — trend_analysis.py'deki
+        pencere bazlı yön tespitiyle AYNI mantık, aynı sonuç tutarlılığı için.
+      - False: sabit `min_pct_margin` tüm gruplar için kullanılır (eski davranış,
+        geriye dönük uyumluluk ve hızlı test için).
+
+    Kullanılan marj ve kaynağı her satıra {metric}_margin_used /
+    {metric}_margin_source olarak eklenir.
 
     Toplam seans sayısı `window`'dan az olan (patient_id, region) grupları
     için tüm satırlarda direction="insufficient_data" döner.
@@ -156,10 +173,11 @@ def detect_anomalies(
 
     Dönen DataFrame: orijinal tüm satırlar +
         {metric}_baseline_mean, {metric}_baseline_std,
-        {metric}_z, {metric}_is_anomaly, {metric}_direction, {metric}_severity
-        sütunları eklenerek.
+        {metric}_z, {metric}_is_anomaly, {metric}_direction, {metric}_severity,
+        {metric}_margin_used, {metric}_margin_source sütunları eklenerek.
         direction: "high" / "low" / "insufficient_data" / None
         severity:  "heavy" / "medium" / "light" / None (is_anomaly=False ise None)
+        margin_source: "personal_calibration" / "aga_reference_fallback" / "fixed"
     """
     result_frames = []
 
@@ -175,6 +193,16 @@ def detect_anomalies(
             anomalies  = np.zeros(n, dtype=bool)
             directions = np.full(n, None, dtype=object)
             severities = np.full(n, None, dtype=object)
+
+            if use_personal_calibration:
+                margin_info    = compute_personal_margin(
+                    grp, metric, calibration_size, fallback_pct, floor_pct,
+                )
+                metric_margin  = margin_info["min_pct_margin"]
+                margin_source  = margin_info["source"]
+            else:
+                metric_margin  = min_pct_margin
+                margin_source  = "fixed"
 
             if n < window:
                 directions[:] = "insufficient_data"
@@ -192,7 +220,7 @@ def detect_anomalies(
                     if s > 0:
                         z = (vals[i] - m) / s
                         zs[i] = round(z, 3)
-                        is_anomaly_final = (abs(z) > threshold) and (pct_deviation > min_pct_margin)
+                        is_anomaly_final = (abs(z) > threshold) and (pct_deviation > metric_margin)
                         if is_anomaly_final:
                             anomalies[i]  = True
                             directions[i] = "high" if z > threshold else "low"
@@ -209,11 +237,13 @@ def detect_anomalies(
                     else:
                         # pencere birebir ayni (std=0) ama deger farkli ->
                         # z-score tanimsiz; yine de pratik marj sarti araniyor
-                        if pct_deviation > min_pct_margin:
+                        if pct_deviation > metric_margin:
                             anomalies[i]  = True
                             directions[i] = "high" if vals[i] > m else "low"
                             severities[i] = "heavy"
 
+            grp[f"{metric}_margin_used"]   = metric_margin
+            grp[f"{metric}_margin_source"] = margin_source
             grp[f"{metric}_baseline_mean"] = means
             grp[f"{metric}_baseline_std"]  = stds
             grp[f"{metric}_z"]             = zs
@@ -250,7 +280,7 @@ def print_anomalies(
 ) -> list[dict]:
     section(
         f"ANOMALİ TESPİTLERİ  (pencere: son {window} seans, "
-        f"eşik: ±{threshold} std, min marj: %{min_pct_margin})"
+        f"eşik: ±{threshold} std, marj: kişisel kalibrasyon / fallback %{min_pct_margin})"
     )
 
     found = []
@@ -270,6 +300,8 @@ def print_anomalies(
             pid   = row["patient_id"]
             direction      = row[f"{metric}_direction"]
             severity       = row.get(f"{metric}_severity")
+            margin_used    = row.get(f"{metric}_margin_used")
+            margin_source  = row.get(f"{metric}_margin_source")
             low_confidence = pd.isna(z)
             arrow  = "↑" if direction == "high" else "↓"
             z_desc = f"{arrow}{abs(z):.2f}" if not low_confidence else "düşük güven (pencere sabit, z tanımsız)"
@@ -281,7 +313,8 @@ def print_anomalies(
                 f"Bölge: {row['region']:12s} | "
                 f"Seans: {sno} | "
                 f"{label}: {val}  "
-                f"(baseline: {bm}, z: {z_desc}, eşik: ±{threshold})"
+                f"(baseline: {bm}, z: {z_desc}, eşik: ±{threshold}, "
+                f"marj: %{margin_used} [{margin_source}])"
             )
             print(red_flash(line))
             found.append({
@@ -297,6 +330,8 @@ def print_anomalies(
                 "direction":      direction,
                 "low_confidence": low_confidence,
                 "severity":       severity,
+                "margin_used":    margin_used,
+                "margin_source":  margin_source,
             })
 
     if not found:
@@ -383,7 +418,14 @@ def main():
     parser.add_argument("--threshold", type=float, default=ANOMALY_THRESHOLD,
                         help=f"Z-score eşiği, ± std (varsayılan: {ANOMALY_THRESHOLD})")
     parser.add_argument("--min-pct-margin", type=float, default=ANOMALY_MIN_PCT_MARGIN,
-                        help=f"Minimum pratik %% sapma marjı (varsayılan: {ANOMALY_MIN_PCT_MARGIN})")
+                        help=f"Sabit marj modunda (--fixed-margin) kullanılan %% sapma marjı "
+                             f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN})")
+    parser.add_argument("--fixed-margin", action="store_true",
+                        help="Kişisel kalibrasyonu kapat, tüm gruplar için sabit --min-pct-margin kullan")
+    parser.add_argument("--calibration-size", type=int, default=6,
+                        help="Kişisel marj kalibrasyonu için ilk kaç seans kullanılsın (varsayılan: 6)")
+    parser.add_argument("--floor-pct", type=float, default=3.0,
+                        help="Kişisel CV%%'nin düşemeyeceği taban marj (varsayılan: 3.0)")
     parser.add_argument("--patient-id", default=None, help="Tek hasta filtrele")
     args = parser.parse_args()
 
@@ -396,6 +438,12 @@ def main():
     if not (0.0 <= args.min_pct_margin <= 100.0):
         print(f"{C.RED}[HATA] --min-pct-margin 0-100 arasında olmalı (verilen: {args.min_pct_margin}){C.RESET}")
         sys.exit(1)
+    if not (2 <= args.calibration_size <= 30):
+        print(f"{C.RED}[HATA] --calibration-size 2–30 arasında olmalı (verilen: {args.calibration_size}){C.RESET}")
+        sys.exit(1)
+    if not (0.0 <= args.floor_pct <= 50.0):
+        print(f"{C.RED}[HATA] --floor-pct 0-50 arasında olmalı (verilen: {args.floor_pct}){C.RESET}")
+        sys.exit(1)
 
     print(f"\n{C.BOLD}{C.CYAN}"
           f"──────────────────────────────────────────────────\n"
@@ -403,8 +451,13 @@ def main():
           f"──────────────────────────────────────────────────"
           f"{C.RESET}")
 
+    use_personal_calibration = not args.fixed_margin
+
     df        = load_data(args.input, args.patient_id)
-    df        = detect_anomalies(df, args.window, args.threshold, args.min_pct_margin)
+    df        = detect_anomalies(
+        df, args.window, args.threshold, args.min_pct_margin,
+        use_personal_calibration, args.calibration_size, args.floor_pct,
+    )
 
     print_summary(df)
     anomalies = print_anomalies(df, args.window, args.threshold, args.min_pct_margin)
@@ -413,9 +466,13 @@ def main():
     section("ANALİZ TAMAMLANDI")
     color = C.RED if anomalies else C.GREEN
     print(f"  {color}{C.BOLD}Toplam anomali: {len(anomalies)}{C.RESET}")
+    margin_desc = (
+        f"Sabit marj: %{args.min_pct_margin}" if args.fixed_margin
+        else f"Kişisel kalibrasyon (ilk {args.calibration_size} seans, taban %{args.floor_pct})"
+    )
     print(
         f"  Pencere: son {args.window} seans  |  Eşik: ±{args.threshold} std  |  "
-        f"Min marj: %{args.min_pct_margin}  |  Yöntem: rolling z-score\n"
+        f"{margin_desc}  |  Yöntem: rolling z-score\n"
     )
 
     if args.output:

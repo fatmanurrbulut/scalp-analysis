@@ -63,6 +63,9 @@ class AnomalyRecord(BaseModel):
     z_score:        float | None
     direction:      str
     low_confidence: bool
+    severity:       str | None = None
+    margin_used:    float | None = None
+    margin_source:  str | None = None
 
 
 class AnalysisSummary(BaseModel):
@@ -161,9 +164,26 @@ _THRESHOLD_QUERY = Query(
 _MIN_PCT_MARGIN_QUERY = Query(
     default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
     description=(
-        f"Minimum pratik % sapma marjı (varsayılan: {ANOMALY_MIN_PCT_MARGIN}). "
-        "Anomali için hem |z| > threshold HEM de bu marjın aşılması gerekir."
+        f"Sadece use_personal_calibration=false iken kullanılan sabit marj "
+        f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN}). Anomali için hem |z| > threshold "
+        "HEM de bu marjın aşılması gerekir."
     ),
+)
+_USE_PERSONAL_CALIBRATION_QUERY = Query(
+    default=True,
+    description=(
+        "True ise marj her hasta × bölge için ilk calibration_size seanstan kişisel "
+        "CV% ile hesaplanır (trend_analysis.py ile aynı mantık). False ise sabit "
+        "min_pct_margin tüm gruplar için kullanılır."
+    ),
+)
+_CALIBRATION_SIZE_QUERY = Query(
+    default=6, ge=2, le=30,
+    description="Kişisel marj kalibrasyonu için kullanılan ilk seans sayısı (varsayılan: 6)",
+)
+_FLOOR_PCT_QUERY = Query(
+    default=3.0, ge=0.0, le=50.0,
+    description="Kişisel CV%'nin düşemeyeceği taban marj (varsayılan: 3.0)",
 )
 
 
@@ -216,6 +236,7 @@ def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
         for _, row in df[df[col]].iterrows():
             z       = row[f"{metric}_z"]
             z_score = None if pd.isna(z) else float(z)
+            margin_used = row.get(f"{metric}_margin_used")
             found.append({
                 "patient_id":     row["patient_id"],
                 "patient_name":   f"{row['first_name']} {row['last_name']}",
@@ -228,6 +249,9 @@ def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
                 "z_score":        z_score,
                 "direction":      row[f"{metric}_direction"],
                 "low_confidence": z_score is None,
+                "severity":       row.get(f"{metric}_severity"),
+                "margin_used":    float(margin_used) if margin_used is not None else None,
+                "margin_source":  row.get(f"{metric}_margin_source"),
             })
     return found
 
@@ -260,6 +284,9 @@ def _run_analysis(
     window: int,
     threshold: float,
     min_pct_margin: float,
+    use_personal_calibration: bool = True,
+    calibration_size: int = 6,
+    floor_pct: float = 3.0,
     patient_id: str | None = None,
 ) -> AnalyzeResponse:
     _validate_df(df)
@@ -272,7 +299,10 @@ def _run_analysis(
                 detail=f"patient_id bulunamadı: {patient_id}",
             )
 
-    df        = detect_anomalies(df, window, threshold, min_pct_margin)
+    df        = detect_anomalies(
+        df, window, threshold, min_pct_margin,
+        use_personal_calibration, calibration_size, floor_pct,
+    )
     anomalies = _extract_anomalies(df)
     return _build_response(df, anomalies, window, threshold, min_pct_margin)
 
@@ -307,9 +337,12 @@ async def thresholds() -> dict:
 )
 async def analyze(
     request: Request,
-    window:         int   = _WINDOW_QUERY,
-    threshold:      float = _THRESHOLD_QUERY,
-    min_pct_margin: float = _MIN_PCT_MARGIN_QUERY,
+    window:                   int   = _WINDOW_QUERY,
+    threshold:                float = _THRESHOLD_QUERY,
+    min_pct_margin:           float = _MIN_PCT_MARGIN_QUERY,
+    use_personal_calibration: bool  = _USE_PERSONAL_CALIBRATION_QUERY,
+    calibration_size:         int   = _CALIBRATION_SIZE_QUERY,
+    floor_pct:                float = _FLOOR_PCT_QUERY,
 ) -> AnalyzeResponse:
     """
     İki içerik türü desteklenir:
@@ -366,7 +399,7 @@ async def analyze(
             ),
         )
 
-    return _run_analysis(df, window, threshold, min_pct_margin)
+    return _run_analysis(df, window, threshold, min_pct_margin, use_personal_calibration, calibration_size, floor_pct)
 
 
 @app.get(
@@ -377,9 +410,12 @@ async def analyze(
 )
 async def analyze_patient(
     patient_id: str,
-    window:         int   = _WINDOW_QUERY,
-    threshold:      float = _THRESHOLD_QUERY,
-    min_pct_margin: float = _MIN_PCT_MARGIN_QUERY,
+    window:                   int   = _WINDOW_QUERY,
+    threshold:                float = _THRESHOLD_QUERY,
+    min_pct_margin:           float = _MIN_PCT_MARGIN_QUERY,
+    use_personal_calibration: bool  = _USE_PERSONAL_CALIBRATION_QUERY,
+    calibration_size:         int   = _CALIBRATION_SIZE_QUERY,
+    floor_pct:                float = _FLOOR_PCT_QUERY,
 ) -> AnalyzeResponse:
     """
     Belirli bir hasta için anomali analizi.
@@ -402,7 +438,11 @@ async def analyze_patient(
         raise HTTPException(status_code=404, detail=f"Veri dosyası bulunamadı: {_DEFAULT_DATA_FILE}")
 
     df = _csv_to_df(path.read_bytes())
-    return _run_analysis(df, window, threshold, min_pct_margin, patient_id=patient_id)
+    return _run_analysis(
+        df, window, threshold, min_pct_margin,
+        use_personal_calibration, calibration_size, floor_pct,
+        patient_id=patient_id,
+    )
 
 
 @app.get(
@@ -425,17 +465,15 @@ async def trend_patient(
         default=2.0, ge=0.1, le=10.0,
         description="Bant genişliği için std çarpanı (varsayılan: 2.0)",
     ),
-    min_pct_margin: float = Query(
+    fallback_pct: float = Query(
         default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
         description=(
             "Kişisel kalibrasyon için yeterli veri yokken kullanılan AGA fallback % marjı "
             f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN})"
         ),
     ),
-    calibration_size: int = Query(
-        default=6, ge=2, le=30,
-        description="Kişisel marj kalibrasyonu için kullanılan ilk seans sayısı (varsayılan: 6)",
-    ),
+    calibration_size: int = _CALIBRATION_SIZE_QUERY,
+    floor_pct: float = _FLOOR_PCT_QUERY,
 ) -> PatientTrendResponse:
     """
     Belirli bir hasta için bölge bazlı pencere-ortalaması trend analizi + linear regression.
@@ -484,8 +522,9 @@ async def trend_patient(
             threshold_pct,
             window_size,
             sigma_mult,
-            min_pct_margin,
+            fallback_pct,
             calibration_size,
+            floor_pct,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -513,17 +552,15 @@ async def trend(
         default=2.0, ge=0.1, le=10.0,
         description="Bant genişliği için std çarpanı (varsayılan: 2.0)",
     ),
-    min_pct_margin: float = Query(
+    fallback_pct: float = Query(
         default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
         description=(
             "Kişisel kalibrasyon için yeterli veri yokken kullanılan AGA fallback % marjı "
             f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN})"
         ),
     ),
-    calibration_size: int = Query(
-        default=6, ge=2, le=30,
-        description="Kişisel marj kalibrasyonu için kullanılan ilk seans sayısı (varsayılan: 6)",
-    ),
+    calibration_size: int = _CALIBRATION_SIZE_QUERY,
+    floor_pct: float = _FLOOR_PCT_QUERY,
 ) -> ClinicTrendResponse:
     """
     Tüm hastalara bölge bazlı delta + linear regression uygular,
@@ -583,8 +620,9 @@ async def trend(
         threshold_pct,
         window_size,
         sigma_mult,
-        min_pct_margin,
+        fallback_pct,
         calibration_size,
+        floor_pct,
     )
 
     return ClinicTrendResponse(

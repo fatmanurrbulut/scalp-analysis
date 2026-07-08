@@ -16,6 +16,7 @@ from clinical_thresholds import (
     compare_to_aga_reference,
     project_tv_ratio,
 )
+from margin_utils import compute_personal_margin
 
 
 # ─── Biological CSV constants ──────────────────────────────────────────────────
@@ -36,58 +37,10 @@ def _terminal_vellus_ratio(rows: pd.DataFrame) -> float | None:
     return terminal_count / vellus_count
 
 
-def compute_personal_margin(
-    rgrp: pd.DataFrame,
-    metric_col: str,
-    calibration_size: int = 6,
-    fallback_pct: float = FALLBACK_MIN_PCT_MARGIN,
-) -> dict:
-    """
-    Hasta × bölge bazında kişisel minimum yüzde marjını hesaplar.
-
-    AGA referans tablosu bölgeler arası anatomik farklılığı ölçer, hastanın
-    kendi zamansal gürültüsünü temsil etmez. Bu fonksiyon yeterli veri birikince
-    kişisel kalibrasyona geçer, AGA değeri sadece ilk birkaç seans için geçici
-    fallback'tir.
-
-    Yeterli veri varsa ilk `calibration_size` seanstaki `metric_col`
-    değerlerinden CV% hesaplanır:
-
-        cv_pct = std(ddof=1) / mean * 100
-
-    Returns:
-        {"min_pct_margin": float, "source": str, "n_calibration_points": int}
-    """
-    if len(rgrp) < calibration_size:
-        return {
-            "min_pct_margin": round(float(fallback_pct), 1),
-            "source": "aga_reference_fallback",
-            "n_calibration_points": int(len(rgrp)),
-        }
-
-    calibration = (
-        rgrp.sort_values("session_date")
-        .head(calibration_size)[metric_col]
-        .astype(float)
-    )
-
-    # TODO: Kalibrasyon dönemindeki mevcut z-score anomalileri veya belirgin
-    # regresyon sapmaları dışarıda bırakılmalı. Bunun için detect_anomalies()
-    # çıktısının trend analizine temiz biçimde taşınması gerekiyor.
-    avg = float(calibration.mean())
-    if avg == 0:
-        return {
-            "min_pct_margin": round(float(fallback_pct), 1),
-            "source": "aga_reference_fallback",
-            "n_calibration_points": int(len(calibration)),
-        }
-
-    cv_pct = float(calibration.std(ddof=1) / avg * 100)
-    return {
-        "min_pct_margin": round(cv_pct, 1),
-        "source": "personal_calibration",
-        "n_calibration_points": int(len(calibration)),
-    }
+# compute_personal_margin artık margin_utils.py'de tanımlı (scalp_analysis.py
+# ile ortak kullanım + circular import riskini önlemek için). Bu modül onu
+# yukarıdan import eder; floor_pct ve anomaly_flags (kontaminasyon koruması)
+# artık orada destekleniyor.
 
 
 def _windowed_metric_trend(
@@ -160,6 +113,7 @@ def analyze_region_trend(
     sigma_mult: float = 2.0,
     fallback_pct: float = FALLBACK_MIN_PCT_MARGIN,
     calibration_size: int = 6,
+    floor_pct: float = 3.0,
 ) -> list[dict]:
     """
     Hasta × bölge bazlı trend analizi + tüm seanslara linear regression.
@@ -187,8 +141,10 @@ def analyze_region_trend(
 
         `min_pct_margin` sabit bir klinik sayı değildir. Her hasta × bölge için
         yeterli veri varsa ilk `calibration_size` seanstan kişisel CV% ile
-        hesaplanır; yeterli veri yoksa AGA referansından türetilmiş fallback
-        değeri geçici olarak kullanılır.
+        hesaplanır (bkz. margin_utils.compute_personal_margin); yeterli veri
+        yoksa AGA referansından türetilmiş `fallback_pct` geçici olarak
+        kullanılır. Kişisel CV, `floor_pct`'nin altına düşemez — çok stabil
+        bir kalibrasyon dönemi sistemi aşırı hassas hale getirmesin diye.
 
     Returns:
         Her bölge için bir dict içeren liste.
@@ -217,12 +173,14 @@ def analyze_region_trend(
             "hair_density_hairs_cm2",
             calibration_size,
             fallback_pct,
+            floor_pct,
         )
         thickness_margin = compute_personal_margin(
             rgrp,
             "hair_thickness_um",
             calibration_size,
             fallback_pct,
+            floor_pct,
         )
 
         _base: dict = {
@@ -378,6 +336,7 @@ def analyze_patient_trend(
     sigma_mult: float = 2.0,
     fallback_pct: float = FALLBACK_MIN_PCT_MARGIN,
     calibration_size: int = 6,
+    floor_pct: float = 3.0,
 ) -> dict:
     """
     Hasta bazlı trend özeti: tüm bölgelerin ortalaması + overall_direction.
@@ -395,7 +354,7 @@ def analyze_patient_trend(
     name = f"{row0['first_name']} {row0['last_name']}"
 
     regions = analyze_region_trend(
-        df, patient_id, threshold_pct, window_size, sigma_mult, fallback_pct, calibration_size
+        df, patient_id, threshold_pct, window_size, sigma_mult, fallback_pct, calibration_size, floor_pct
     )
 
     # Latest session aggregates (density, thickness, hair type distribution)
@@ -445,6 +404,7 @@ def analyze_clinic_trend(
     sigma_mult: float = 2.0,
     fallback_pct: float = FALLBACK_MIN_PCT_MARGIN,
     calibration_size: int = 6,
+    floor_pct: float = 3.0,
 ) -> dict:
     """
     Klinik geneli trend özeti: tüm hastalar için analyze_patient_trend çağrısı,
@@ -452,7 +412,9 @@ def analyze_clinic_trend(
     """
     patient_ids = df["patient_id"].unique()
     patients = [
-        analyze_patient_trend(df, pid, threshold_pct, window_size, sigma_mult, fallback_pct, calibration_size)
+        analyze_patient_trend(
+            df, pid, threshold_pct, window_size, sigma_mult, fallback_pct, calibration_size, floor_pct
+        )
         for pid in patient_ids
     ]
 
