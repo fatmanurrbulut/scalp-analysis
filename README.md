@@ -160,7 +160,10 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
    ```
    recent_avg   = son window_size seansın ortalaması
    previous_avg = bir önceki window_size seansın ortalaması
-   pooled_std   = recent + previous birleşik verinin std'si (ddof=1)
+   pooled_std   = sqrt(((n1-1)*std(recent)² + (n2-1)*std(previous)²) / (n1+n2-2))
+                  (grup-içi varyansların klasik pooled-variance birleşimi —
+                   recent+previous'ı tek diziye birleştirip düz std almak
+                   YANLIŞTIR: bu, aradaki trendi gürültü sayıp bandı şişirir)
    band         = max(sigma_mult * pooled_std, |previous_avg| * min_pct_margin / 100)
    ```
 

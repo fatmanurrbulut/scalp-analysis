@@ -49,9 +49,16 @@ def _windowed_metric_trend(
     Bant (Grafana margin-band mantığı):
         band = max(sigma_mult * pooled_std, abs(previous_avg) * min_pct_margin/100)
 
-    pooled_std: recent + previous birleşik verinin std'si (ddof=1). Böylece
-    hem istatistiksel (sigma) hem pratik (%) anlamlılık aranır — tek nokta
-    farkının gürültüye duyarlılığı azaltılır.
+    pooled_std: recent ve previous gruplarının KENDİ İÇİ varyanslarının klasik
+    pooled-variance formülüyle birleşimi (ddof=1):
+
+        pooled_std = sqrt(((n1-1)*std(recent)^2 + (n2-1)*std(previous)^2) / (n1+n2-2))
+
+    ÖNEMLİ: recent+previous'ı tek diziye birleştirip düz std almak YANLIŞTIR —
+    iki grup arasındaki gerçek fark (trend) de "gürültü" gibi sayılır ve trend
+    ne kadar güçlüyse pooled_std o kadar şişer, bant o kadar genişler, trend o
+    kadar zor yakalanır (kendi kendini engelleyen bir hesap). Bu yüzden
+    grup-içi varyanslar ayrı hesaplanıp öyle birleştirilir.
 
     Çağıran, `vals` dizisinin en az `2 * window_size` eleman içerdiğinden
     emin olmalı.
@@ -62,8 +69,12 @@ def _windowed_metric_trend(
     recent_avg   = float(recent.mean())
     previous_avg = float(previous.mean())
 
-    pooled = np.concatenate([recent, previous])
-    pooled_std = float(pooled.std(ddof=1)) if len(pooled) > 1 else 0.0
+    n1, n2 = len(recent), len(previous)
+    if n1 > 1 and n2 > 1:
+        s1, s2 = recent.std(ddof=1), previous.std(ddof=1)
+        pooled_std = float(np.sqrt(((n1 - 1) * s1 ** 2 + (n2 - 1) * s2 ** 2) / (n1 + n2 - 2)))
+    else:
+        pooled_std = 0.0
 
     band = max(sigma_mult * pooled_std, abs(previous_avg) * (min_pct_margin / 100.0))
     diff = recent_avg - previous_avg
