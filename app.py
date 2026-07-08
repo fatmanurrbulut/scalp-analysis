@@ -137,7 +137,7 @@ with st.sidebar:
     )
 
     calibration_size = st.slider(
-        "Kişisel Kalibrasyon Seansı",
+        "Seans Sayısı",
         min_value=2, max_value=12, value=6, step=1,
     )
 
