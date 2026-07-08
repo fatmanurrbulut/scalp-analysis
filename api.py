@@ -66,6 +66,7 @@ class AnomalyRecord(BaseModel):
     severity:       str | None = None
     margin_used:    float | None = None
     margin_source:  str | None = None
+    margin_excluded: int | None = None
 
 
 class AnalysisSummary(BaseModel):
@@ -98,12 +99,16 @@ class PatientTrendSummary(BaseModel):
 class RegionTrendRecord(BaseModel):
     region:             str
     direction:          str
+    direction_basis:    str | None = None
     confidence:         str | None = None
     min_pct_margin_used: float | None = None
     margin_source:      str | None = None
     calibration_points_used: int | None = None
+    calibration_points_excluded: int | None = None
     delta_density:      float | None
     delta_density_pct:  float | None
+    last_session_delta_pct: float | None = None
+    window_avg_delta_pct:   float | None = None
     recent_avg:         float | None = None
     previous_avg:       float | None = None
     window_pct_change:  float | None = None
@@ -237,6 +242,7 @@ def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
             z       = row[f"{metric}_z"]
             z_score = None if pd.isna(z) else float(z)
             margin_used = row.get(f"{metric}_margin_used")
+            margin_excluded = row.get(f"{metric}_margin_excluded")
             found.append({
                 "patient_id":     row["patient_id"],
                 "patient_name":   f"{row['first_name']} {row['last_name']}",
@@ -252,6 +258,7 @@ def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
                 "severity":       row.get(f"{metric}_severity"),
                 "margin_used":    float(margin_used) if margin_used is not None else None,
                 "margin_source":  row.get(f"{metric}_margin_source"),
+                "margin_excluded": int(margin_excluded) if margin_excluded is not None else None,
             })
     return found
 

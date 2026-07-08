@@ -376,21 +376,34 @@ else:
     sc3.metric("Terminal %", summary["terminal_pct"])
     sc4.metric("Genel Yön", clinical_trend["overall_direction"])
 
+    _CALIBRATION_ICONS = {
+        "personal_calibration":   "✓",
+        "aga_reference_fallback": "⏳",
+        "contaminated_fallback":  "⚠",
+        "fixed":                  "—",
+    }
+
     clinical_rows = []
     for region in clinical_trend["regions"]:
         tv_status = region.get("tv_status") or {}
         aga = region.get("aga_comparison") or {}
         margin_source = region.get("margin_source")
-        calibration_status = "✓" if margin_source == "personal_calibration" else "⏳"
+        direction_basis = region.get("direction_basis")
+        # "Yön" kararını GERÇEKTEN hangi sayı verdi: window_avg -> pencere ortalaması,
+        # last_session -> son seans farkı (yeterli veri olmadığı için fallback)
+        basis_label = "pencere ort." if direction_basis == "window_avg" else "son seans"
         clinical_rows.append({
             "Bölge": region["region"],
             "Yön": region["direction"],
+            "Yön Kaynağı": basis_label,
             "Güven": region.get("confidence"),
-            "Kalibrasyon": calibration_status,
+            "Kalibrasyon": _CALIBRATION_ICONS.get(margin_source, "?"),
             "Marj Kaynağı": margin_source,
             "Marj %": region.get("min_pct_margin_used"),
             "Kalibrasyon N": region.get("calibration_points_used"),
-            "Yoğunluk Δ%": region["delta_density_pct"],
+            "Kalibrasyon Dışlanan": region.get("calibration_points_excluded"),
+            "Yoğunluk Δ% (pencere)": region.get("window_avg_delta_pct"),
+            "Son Seans Δ%": region.get("last_session_delta_pct"),
             "Kalınlık Δ%": region["delta_thickness_pct"],
             "Saç Tipi": region.get("hair_type_classification"),
             "T/V": region.get("tv_ratio"),
@@ -403,6 +416,11 @@ else:
         pd.DataFrame(clinical_rows),
         use_container_width=True,
         hide_index=True,
+    )
+    st.caption(
+        "⚠ Kalibrasyon = yeterli seans vardı ama bir kısmı aykırı değer olduğu için "
+        "dışlandı ve geriye kalan yetersiz kaldı, AGA fallback kullanıldı. "
+        "⏳ = henüz yeterli seans yok. ✓ = kişisel kalibrasyon geçerli."
     )
 
     with st.expander("Referans eşiklerini göster"):
@@ -448,8 +466,9 @@ for metric, label in METRICS.items():
         bm            = row.get(f"{metric}_baseline_mean", np.nan)
         direction     = row.get(f"{metric}_direction")
         severity      = row.get(f"{metric}_severity")
-        margin_used   = row.get(f"{metric}_margin_used")
-        margin_source = row.get(f"{metric}_margin_source")
+        margin_used    = row.get(f"{metric}_margin_used")
+        margin_source  = row.get(f"{metric}_margin_source")
+        margin_excluded = row.get(f"{metric}_margin_excluded")
         val           = float(row[metric])
         rows.append({
             "Hasta":         f"{row['first_name']} {row['last_name']}",
@@ -463,6 +482,7 @@ for metric, label in METRICS.items():
             "Severity":      severity.upper() if severity else "—",
             "Marj %":        margin_used,
             "Marj Kaynağı":  margin_source,
+            "Kalibrasyon Dışlanan": margin_excluded,
         })
 
 if rows:

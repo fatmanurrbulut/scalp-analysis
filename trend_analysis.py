@@ -191,6 +191,8 @@ def analyze_region_trend(
             "r_squared": None, "p_value": None,
             "predicted_next": None,
             "delta_density": None, "delta_density_pct": None,
+            "last_session_delta_pct": None, "window_avg_delta_pct": None,
+            "direction_basis": None,
             "delta_thickness": None, "delta_thickness_pct": None,
             "delta_terminal_pct": None,
             "recent_avg": None, "previous_avg": None, "window_pct_change": None,
@@ -200,6 +202,7 @@ def analyze_region_trend(
             "min_pct_margin_used": density_margin["min_pct_margin"],
             "margin_source": density_margin["source"],
             "calibration_points_used": density_margin["n_calibration_points"],
+            "calibration_points_excluded": density_margin["calibration_points_excluded"],
             "direction": "Stable",
         }
 
@@ -273,6 +276,7 @@ def analyze_region_trend(
             )
             direction     = density_window["direction"]
             confidence    = "high"
+            direction_basis = "window_avg"
             recent_avg          = density_window["recent_avg"]
             previous_avg        = density_window["previous_avg"]
             window_pct_change   = density_window["window_pct_change"]
@@ -288,18 +292,28 @@ def analyze_region_trend(
             else:
                 direction = "Stable"
             confidence = "low"
+            direction_basis = "last_session"
             recent_avg = previous_avg = window_pct_change = None
             thickness_recent_avg = thickness_previous_avg = thickness_window_pct_change = None
 
         results.append({
             "region": region,
             "direction": direction,
+            # direction_basis: "Yön" kararını GERÇEKTEN hangi sayı verdi —
+            # "window_avg" ise window_avg_delta_pct, "last_session" ise
+            # last_session_delta_pct. delta_density_pct her zaman son-iki-seans
+            # farkıdır ve confidence="high" iken direction kararına KATILMAZ —
+            # sadece bilgi amaçlıdır, bu yüzden ayrı adlarla da response'a eklenir.
+            "direction_basis": direction_basis,
             "confidence": confidence,
             "min_pct_margin_used": _base["min_pct_margin_used"],
             "margin_source": _base["margin_source"],
             "calibration_points_used": _base["calibration_points_used"],
+            "calibration_points_excluded": _base["calibration_points_excluded"],
             "delta_density": d_delta,
             "delta_density_pct": d_delta_pct,
+            "last_session_delta_pct": d_delta_pct,
+            "window_avg_delta_pct": window_pct_change,
             "recent_avg": recent_avg,
             "previous_avg": previous_avg,
             "window_pct_change": window_pct_change,

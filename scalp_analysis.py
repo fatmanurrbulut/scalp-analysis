@@ -198,11 +198,13 @@ def detect_anomalies(
                 margin_info    = compute_personal_margin(
                     grp, metric, calibration_size, fallback_pct, floor_pct,
                 )
-                metric_margin  = margin_info["min_pct_margin"]
-                margin_source  = margin_info["source"]
+                metric_margin       = margin_info["min_pct_margin"]
+                margin_source       = margin_info["source"]
+                margin_excluded     = margin_info["calibration_points_excluded"]
             else:
-                metric_margin  = min_pct_margin
-                margin_source  = "fixed"
+                metric_margin   = min_pct_margin
+                margin_source   = "fixed"
+                margin_excluded = 0
 
             if n < window:
                 directions[:] = "insufficient_data"
@@ -242,8 +244,9 @@ def detect_anomalies(
                             directions[i] = "high" if vals[i] > m else "low"
                             severities[i] = "heavy"
 
-            grp[f"{metric}_margin_used"]   = metric_margin
-            grp[f"{metric}_margin_source"] = margin_source
+            grp[f"{metric}_margin_used"]     = metric_margin
+            grp[f"{metric}_margin_source"]   = margin_source
+            grp[f"{metric}_margin_excluded"] = margin_excluded
             grp[f"{metric}_baseline_mean"] = means
             grp[f"{metric}_baseline_std"]  = stds
             grp[f"{metric}_z"]             = zs
@@ -302,6 +305,7 @@ def print_anomalies(
             severity       = row.get(f"{metric}_severity")
             margin_used    = row.get(f"{metric}_margin_used")
             margin_source  = row.get(f"{metric}_margin_source")
+            margin_excluded = row.get(f"{metric}_margin_excluded")
             low_confidence = pd.isna(z)
             arrow  = "↑" if direction == "high" else "↓"
             z_desc = f"{arrow}{abs(z):.2f}" if not low_confidence else "düşük güven (pencere sabit, z tanımsız)"
@@ -332,6 +336,7 @@ def print_anomalies(
                 "severity":       severity,
                 "margin_used":    margin_used,
                 "margin_source":  margin_source,
+                "margin_excluded": margin_excluded,
             })
 
     if not found:
