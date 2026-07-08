@@ -10,6 +10,7 @@ import pandas as pd
 from scipy.stats import linregress
 
 from clinical_thresholds import (
+    AGA_DERIVED_MIN_PCT_MARGIN,
     classify_hair_type,
     classify_tv_status,
     compare_to_aga_reference,
@@ -92,7 +93,7 @@ def analyze_region_trend(
     threshold_pct: float = 10.0,
     window_size: int = 3,
     sigma_mult: float = 2.0,
-    min_pct_margin: float = 10.0,
+    min_pct_margin: float = AGA_DERIVED_MIN_PCT_MARGIN,
 ) -> list[dict]:
     """
     Hasta × bölge bazlı trend analizi + tüm seanslara linear regression.
@@ -276,7 +277,7 @@ def analyze_patient_trend(
     threshold_pct: float = 10.0,
     window_size: int = 3,
     sigma_mult: float = 2.0,
-    min_pct_margin: float = 10.0,
+    min_pct_margin: float = AGA_DERIVED_MIN_PCT_MARGIN,
 ) -> dict:
     """
     Hasta bazlı trend özeti: tüm bölgelerin ortalaması + overall_direction.
@@ -342,7 +343,7 @@ def analyze_clinic_trend(
     threshold_pct: float = 10.0,
     window_size: int = 3,
     sigma_mult: float = 2.0,
-    min_pct_margin: float = 10.0,
+    min_pct_margin: float = AGA_DERIVED_MIN_PCT_MARGIN,
 ) -> dict:
     """
     Klinik geneli trend özeti: tüm hastalar için analyze_patient_trend çağrısı,

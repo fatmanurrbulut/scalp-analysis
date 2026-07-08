@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from clinical_thresholds import get_all_thresholds
-from scalp_analysis import ANOMALY_WINDOW, detect_anomalies
+from scalp_analysis import ANOMALY_MIN_PCT_MARGIN, ANOMALY_WINDOW, detect_anomalies
 from trend_analysis import analyze_patient_trend
 
 st.set_page_config(
@@ -115,7 +115,7 @@ with st.sidebar:
 
     min_pct_margin = st.slider(
         "Minimum Anlamlı Değişim (%)",
-        min_value=1.0, max_value=30.0, value=10.0, step=0.5,
+        min_value=1.0, max_value=30.0, value=ANOMALY_MIN_PCT_MARGIN, step=0.1,
     )
 
     if selected_pid is None:

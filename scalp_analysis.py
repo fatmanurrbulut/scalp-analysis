@@ -34,13 +34,16 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from clinical_thresholds import AGA_DERIVED_MIN_PCT_MARGIN
+
 
 # ─── Sabitler ────────────────────────────────────────────────────────────────
 
 ANOMALY_WINDOW         = 3     # rolling baseline penceresi (son N seans, mevcut haric)
 ANOMALY_THRESHOLD      = 2.0   # +/- std esigi
-ANOMALY_MIN_PCT_MARGIN = 10.0  # minimum pratik % sapma - bunun altindaki degisim
-                                # istatistiksel olarak z esigini assa bile anomali sayilmaz
+ANOMALY_MIN_PCT_MARGIN = AGA_DERIVED_MIN_PCT_MARGIN
+# Minimum pratik % sapma AGA referans tablosundan turetilir; bunun altindaki
+# degisim istatistiksel olarak z esigini assa bile anomali sayilmaz.
 
 SEVERITY_MEDIUM_MULT = 1.25   # abs(z) >= threshold * bu deger -> "medium"
 SEVERITY_HEAVY_MULT  = 1.5    # abs(z) >= threshold * bu deger -> "heavy"

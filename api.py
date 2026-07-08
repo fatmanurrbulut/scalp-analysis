@@ -315,7 +315,7 @@ async def analyze(
     - `file` alanı: CSV dosyası
 
     ```
-    curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0&min_pct_margin=10.0" \\
+    curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0" \\
          -F "file=@data.csv"
     ```
 
@@ -385,7 +385,7 @@ async def analyze_patient(
 
     ```
     SCALP_DATA_FILE=data.csv uvicorn api:app --reload
-    curl "http://localhost:8000/analyze/PATIENT-UUID?window=3&threshold=2.0&min_pct_margin=10.0"
+    curl "http://localhost:8000/analyze/PATIENT-UUID?window=3&threshold=2.0"
     ```
     """
     if not _DEFAULT_DATA_FILE:
@@ -423,8 +423,11 @@ async def trend_patient(
         description="Bant genişliği için std çarpanı (varsayılan: 2.0)",
     ),
     min_pct_margin: float = Query(
-        default=10.0, ge=0.0, le=100.0,
-        description="Bant genişliği için minimum pratik % marj (varsayılan: 10.0)",
+        default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
+        description=(
+            "Bant genişliği için minimum pratik % marj "
+            f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN}, AGA referans tablosundan türetilir)"
+        ),
     ),
 ) -> PatientTrendResponse:
     """
@@ -496,8 +499,11 @@ async def trend(
         description="Bant genişliği için std çarpanı (varsayılan: 2.0)",
     ),
     min_pct_margin: float = Query(
-        default=10.0, ge=0.0, le=100.0,
-        description="Bant genişliği için minimum pratik % marj (varsayılan: 10.0)",
+        default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
+        description=(
+            "Bant genişliği için minimum pratik % marj "
+            f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN}, AGA referans tablosundan türetilir)"
+        ),
     ),
 ) -> ClinicTrendResponse:
     """

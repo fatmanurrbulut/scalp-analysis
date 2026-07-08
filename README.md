@@ -43,11 +43,11 @@ Servis çalışırken: http://localhost:8000/docs
 
 ```bash
 # CSV ile analiz (seans bazlı anlık z-score anomalisi)
-curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0&min_pct_margin=10.0" \
+curl -X POST "http://localhost:8000/analyze?window=3&threshold=2.0" \
      -F "file=@data/mock_patient_session_analysis_biological.csv"
 
 # Tek hasta trend (pencere bazlı yön tespiti)
-curl "http://localhost:8000/trend/PATIENT-UUID?window_size=3&sigma_mult=2.0&min_pct_margin=10.0"
+curl "http://localhost:8000/trend/PATIENT-UUID?window_size=3&sigma_mult=2.0"
 
 # Klinik referans eşikleri
 curl "http://localhost:8000/thresholds"
@@ -114,6 +114,14 @@ de önler.
 hastada ufak, pratikte önemsiz bir sapma bile std çok küçük olduğu için
 istatistiksel olarak dev bir z-score üretebilir. Pratik % eşiği, bu tür
 "istatistiksel olarak anlamlı ama klinik olarak önemsiz" durumları eler.
+Varsayılan değer `clinical_thresholds.py` içindeki `ADVANCED_AGA_REFERENCE`
+tablosundan türetilir:
+
+```
+min_pct_margin = 0.5 × mean(CV%(AGA density), CV%(AGA diameter_um))
+```
+
+Mevcut AGA referans tablosuyla varsayılan değer `%10.7` olur.
 
 **Parametreler:**
 
@@ -121,7 +129,7 @@ istatistiksel olarak dev bir z-score üretebilir. Pratik % eşiği, bu tür
 |-----------|-----------|----------|
 | `window` | `3` | Baseline penceresi (seans sayısı) |
 | `threshold` | `2.0` | Z-score eşiği (± std) |
-| `min_pct_margin` | `10.0` | Minimum pratik % sapma marjı |
+| `min_pct_margin` | `10.7` | AGA referans tablosundan türetilen minimum pratik % sapma marjı |
 
 Toplam seans sayısı `window`'dan az olan (hasta, bölge) grupları için
 `direction="insufficient_data"` döner, anomali hesaplanmaz.
@@ -198,7 +206,7 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
 |-----------|-----------|----------|
 | `window_size` | `3` | Pencere karşılaştırması için seans sayısı |
 | `sigma_mult` | `2.0` | Bant genişliği için std çarpanı |
-| `min_pct_margin` | `10.0` | Bant genişliği için minimum pratik % marj |
+| `min_pct_margin` | `10.7` | AGA referans tablosundan türetilen bant genişliği için minimum pratik % marj |
 | `threshold_pct` | `10.0` | Yalnızca fallback (n < window_size*2) durumunda kullanılır |
 
 Minimum `2` seans olmadan delta/regresyon hiç hesaplanmaz; `direction` varsayılan olarak `Stable`, diğer alanlar `null` döner.

@@ -19,6 +19,8 @@ Kaynaklar:
 
 from __future__ import annotations
 
+from statistics import mean, pstdev
+
 
 # ─── Saç Tipi Kalınlık Eşikleri (µm) ─────────────────────────────────────────
 # Kaynak: Vogt 2007 (PMID 17927578), klinik trikoskopi standardı
@@ -103,6 +105,33 @@ ADVANCED_AGA_REFERENCE: dict[str, dict] = {
         "hair_type":   "Terminal",
     },
 }
+
+
+def derive_min_pct_margin_from_aga_reference(
+    reference: dict[str, dict] = ADVANCED_AGA_REFERENCE,
+) -> float:
+    """
+    Minimum pratik yüzde marjını AGA referans tablosundan türetir.
+
+    Yoğunluk ve çap klinik olarak aynı trend/anomali akışında kullanılan iki
+    ana metriktir. T/V oranı ölçek olarak daha oynak olduğu için bu varsayılanı
+    şişirmemesi adına burada dışarıda bırakılır.
+
+    Formül:
+        avg_cv_pct = mean(CV%(density), CV%(diameter_um))
+        min_pct_margin = avg_cv_pct * 0.5
+    """
+    densities = [float(v["density"]) for v in reference.values()]
+    diameters = [float(v["diameter_um"]) for v in reference.values()]
+
+    density_cv_pct = pstdev(densities) / mean(densities) * 100
+    diameter_cv_pct = pstdev(diameters) / mean(diameters) * 100
+    avg_cv_pct = (density_cv_pct + diameter_cv_pct) / 2
+
+    return round(avg_cv_pct * 0.5, 1)
+
+
+AGA_DERIVED_MIN_PCT_MARGIN = derive_min_pct_margin_from_aga_reference()
 
 
 # ─── Fonksiyonlar ─────────────────────────────────────────────────────────────
@@ -300,4 +329,8 @@ def get_all_thresholds() -> dict:
         },
         "tv_rho_factors":        TV_RHO_FACTORS,
         "advanced_aga_reference": ADVANCED_AGA_REFERENCE,
+        "derived_defaults": {
+            "min_pct_margin": AGA_DERIVED_MIN_PCT_MARGIN,
+            "method": "0.5 * mean(CV%(AGA density), CV%(AGA diameter_um))",
+        },
     }
