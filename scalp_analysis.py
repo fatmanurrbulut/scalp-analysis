@@ -5,7 +5,16 @@ Yöntem:
     Her hasta × bölge kombinasyonu için SABİT BOYUTLU bir pencere
     (son ANOMALY_WINDOW seans, mevcut seans hariç) baseline olarak kullanılır.
     z = (mevcut_değer - pencere_ortalaması) / pencere_std
-    |z| > ANOMALY_THRESHOLD ise anomali (hem artış hem düşüş yakalanır).
+    pct_deviation = |mevcut_değer - pencere_ortalaması| / pencere_ortalaması * 100
+
+    ANOMALİ için HEM |z| > ANOMALY_THRESHOLD HEM pct_deviation > margin
+    gerekir (istatistiksel + pratik anlamlılık birlikte aranır; hem artış hem
+    düşüş yakalanır). `margin`, varsayılan olarak hastanın kendi ilk
+    `calibration_size` seansından (kişisel kalibrasyon) hesaplanır — sabit bir
+    klinik sayı değildir. Yeterli kişisel veri yoksa (veya kalibrasyon dönemi
+    kontamine ise) AGA referansından türetilmiş geçici bir fallback kullanılır.
+    Bkz. margin_utils.compute_personal_margin ve detect_anomalies'in
+    use_personal_calibration parametresi.
 
     Tüm geçmişi kullanan (expanding) bir pencere yerine sabit pencere
     tercih edildi: expanding pencerede bir outlier baseline'a girip
@@ -43,8 +52,9 @@ from margin_utils import compute_personal_margin
 ANOMALY_WINDOW         = 3     # rolling baseline penceresi (son N seans, mevcut haric)
 ANOMALY_THRESHOLD      = 2.0   # +/- std esigi
 ANOMALY_MIN_PCT_MARGIN = FALLBACK_MIN_PCT_MARGIN
-# Minimum pratik % sapma AGA referans tablosundan turetilir; bunun altindaki
-# degisim istatistiksel olarak z esigini assa bile anomali sayilmaz.
+# Bu, SADECE use_personal_calibration=False (sabit marj) modunda kullanilan
+# deger; varsayilan modda (True) her hasta/bolge kendi kisisel kalibrasyonunu
+# kullanir, bu sabit sadece yeterli kisisel veri yokken gecici fallback'tir.
 
 SEVERITY_MEDIUM_MULT = 1.25   # abs(z) >= threshold * bu deger -> "medium"
 SEVERITY_HEAVY_MULT  = 1.5    # abs(z) >= threshold * bu deger -> "heavy"

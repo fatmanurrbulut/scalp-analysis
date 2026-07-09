@@ -110,18 +110,35 @@ donup kalmasına ve sürekli trend değişikliklerinde sonsuz alarm üretmesine 
 açıyor. Sabit pencere, eski seansları zamanla kendiliğinden düşürerek ikisini
 de önler.
 
-`min_pct_margin` da bilinçli bir tercih: çok düşük varyanslı (stabil) bir
-hastada ufak, pratikte önemsiz bir sapma bile std çok küçük olduğu için
+Pratik marj (`margin`) da bilinçli bir tercih: çok düşük varyanslı (stabil)
+bir hastada ufak, pratikte önemsiz bir sapma bile std çok küçük olduğu için
 istatistiksel olarak dev bir z-score üretebilir. Pratik % eşiği, bu tür
 "istatistiksel olarak anlamlı ama klinik olarak önemsiz" durumları eler.
-Varsayılan değer `clinical_thresholds.py` içindeki `ADVANCED_AGA_REFERENCE`
-tablosundan türetilir:
+
+Bu marj **sabit bir klinik sayı değildir** — varsayılan olarak
+(`use_personal_calibration=True`) her (hasta, bölge, metrik) için hastanın
+kendi ilk `calibration_size` seansından (kişisel kalibrasyon) hesaplanır:
 
 ```
-min_pct_margin = 0.5 × mean(CV%(AGA density), CV%(AGA diameter_um))
+cv_pct        = std(ddof=1) / mean × 100   (ilk calibration_size seans)
+margin        = max(cv_pct, floor_pct)
 ```
 
-Mevcut AGA referans tablosuyla varsayılan değer `%10.7` olur.
+Kalibrasyon setinin kendi içinde otomatik bir kontaminasyon koruması da
+çalışır (leave-one-out z-score + pratik % eşik ikisi birden): kalibrasyon
+dönemine denk gelen tek seferlik büyük bir sıçrama (örn. ölçüm hatası),
+kişisel "normal gürültü" tahminini kirletmesin diye hesap dışı bırakılır.
+
+Yeterli kişisel veri yoksa (veya kontaminasyon sonrası temiz veri 2'nin
+altına düşerse), `clinical_thresholds.py` içindeki `ADVANCED_AGA_REFERENCE`
+tablosundan türetilmiş geçici bir fallback kullanılır:
+
+```
+fallback_pct = 0.5 × mean(CV%(AGA density), CV%(AGA diameter_um))   # ≈ %10.7
+```
+
+`use_personal_calibration=False` verilirse kişisel kalibrasyon tamamen
+devre dışı kalır, tüm gruplar için sabit `min_pct_margin` kullanılır.
 
 **Parametreler:**
 
@@ -129,7 +146,10 @@ Mevcut AGA referans tablosuyla varsayılan değer `%10.7` olur.
 |-----------|-----------|----------|
 | `window` | `3` | Baseline penceresi (seans sayısı) |
 | `threshold` | `2.0` | Z-score eşiği (± std) |
-| `min_pct_margin` | `10.7` | AGA referans tablosundan türetilen minimum pratik % sapma marjı |
+| `use_personal_calibration` | `true` | Kişisel kalibrasyon açık/kapalı |
+| `calibration_size` | `6` | Kişisel kalibrasyon için kullanılan ilk seans sayısı |
+| `floor_pct` | `3.0` | Kişisel CV%'nin düşemeyeceği taban marj |
+| `min_pct_margin` | `10.7` | Yalnızca `use_personal_calibration=false` iken kullanılan sabit marj |
 
 Toplam seans sayısı `window`'dan az olan (hasta, bölge) grupları için
 `direction="insufficient_data"` döner, anomali hesaplanmaz.
@@ -142,6 +162,9 @@ Toplam seans sayısı `window`'dan az olan (hasta, bölge) grupları için
 | `z_score` | Hesaplanan z-score |
 | `direction` | `high` / `low` / `insufficient_data` |
 | `severity` | `heavy` / `medium` / `light` — yalnızca anomali=true satırlarda |
+| `margin_used` | Bu satır için kullanılan pratik % marj |
+| `margin_source` | `personal_calibration` / `aga_reference_fallback` / `contaminated_fallback` / `fixed` |
+| `margin_excluded` | Kontaminasyon koruması nedeniyle kalibrasyondan dışlanan nokta sayısı |
 
 **Analiz edilen metrikler:**
 
@@ -164,8 +187,9 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
                   (grup-içi varyansların klasik pooled-variance birleşimi —
                    recent+previous'ı tek diziye birleştirip düz std almak
                    YANLIŞTIR: bu, aradaki trendi gürültü sayıp bandı şişirir)
-   personal_margin = ilk calibration_size seansın CV%'si
-                     (yeterli veri yoksa AGA fallback: %10.7)
+   personal_margin = max(ilk calibration_size seansın CV%'si, floor_pct)
+                     (kalibrasyon setinde otomatik kontaminasyon koruması var;
+                      yeterli/temiz veri yoksa AGA fallback: %10.7)
    band            = max(sigma_mult * pooled_std, |previous_avg| * personal_margin / 100)
    ```
 
@@ -194,12 +218,16 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
 | Çıktı | Açıklama |
 |-------|----------|
 | `direction` | `Increasing` / `Decreasing` / `Stable` |
+| `direction_basis` | `window_avg` (direction, pencere ortalaması farkından geldi) / `last_session` (yeterli veri yoktu, son-2-seans fallback'ından geldi) — **`direction`'ı gerçekte hangi sayının verdiğini gösterir** |
 | `confidence` | `high` (pencere bazlı) / `low` (son-2-seans fallback) |
 | `min_pct_margin_used` | Bu bölgenin trend bandında kullanılan kişisel/fallback % marj |
-| `margin_source` | `personal_calibration` veya `aga_reference_fallback` |
-| `calibration_points_used` | Marj hesabına giren kalibrasyon seansı sayısı |
+| `margin_source` | `personal_calibration` / `aga_reference_fallback` (henüz yeterli seans yok) / `contaminated_fallback` (seans vardı ama kontaminasyon sonrası yetersiz kaldı) |
+| `calibration_points_used` | Marj hesabına giren TEMİZ kalibrasyon seansı sayısı |
+| `calibration_points_excluded` | Kontaminasyon koruması nedeniyle kalibrasyondan dışlanan nokta sayısı |
 | `delta_density`, `delta_density_pct` | Son iki seans arası yoğunluk farkı (her zaman hesaplanır, bilgi amaçlı) |
-| `recent_avg`, `previous_avg`, `window_pct_change` | Pencere bazlı karşılaştırma (yalnızca `confidence="high"` iken dolu) |
+| `last_session_delta_pct` | `delta_density_pct` ile aynı değer, netlik için ayrı isim |
+| `window_avg_delta_pct` | Pencere bazlı % değişim — `direction_basis="window_avg"` iken kararı bu verir |
+| `recent_avg`, `previous_avg`, `window_pct_change` | Pencere bazlı karşılaştırma (yalnızca `confidence="high"` iken dolu; `window_pct_change` = `window_avg_delta_pct` ile aynı) |
 | `delta_thickness`, `delta_thickness_pct` | Son iki seans arası kalınlık farkı |
 | `thickness_recent_avg`, `thickness_previous_avg`, `thickness_window_pct_change` | Kalınlık için pencere bazlı karşılaştırma |
 | `delta_terminal_pct` | Son iki seans arası Terminal saç yüzdesi farkı |
@@ -217,8 +245,9 @@ Her **hasta × bölge** kombinasyonu için (`analyze_region_trend`) şu adımlar
 |-----------|-----------|----------|
 | `window_size` | `3` | Pencere karşılaştırması için seans sayısı |
 | `sigma_mult` | `2.0` | Bant genişliği için std çarpanı |
-| `min_pct_margin` | `10.7` | Yeterli kişisel veri yokken kullanılan AGA fallback % marjı |
+| `fallback_pct` | `10.7` | Yeterli/temiz kişisel veri yokken kullanılan AGA fallback % marjı |
 | `calibration_size` | `6` | Kişisel marj kalibrasyonu için kullanılan ilk seans sayısı |
+| `floor_pct` | `3.0` | Kişisel CV%'nin düşemeyeceği taban marj |
 | `threshold_pct` | `10.0` | Yalnızca fallback (n < window_size*2) durumunda kullanılır |
 
 Minimum `2` seans olmadan delta/regresyon hiç hesaplanmaz; `direction` varsayılan olarak `Stable`, diğer alanlar `null` döner.

@@ -115,7 +115,7 @@ def compute_aga_fallback_margin(
 
     UYARI: bu değer bölgeler arası anatomik farklılıktan türetilmiştir,
     hastaya özel zamansal gürültüyü temsil ETMEZ. Sadece yeterli kişisel veri
-    birikene kadar (bkz. trend_analysis.compute_personal_margin) geçici
+    birikene kadar (bkz. margin_utils.compute_personal_margin) geçici
     fallback olarak kullanılır.
 
     Yoğunluk ve çap klinik olarak aynı trend/anomali akışında kullanılan iki
@@ -138,10 +138,9 @@ def compute_aga_fallback_margin(
 
 # UYARI: bu değer bölgeler arası anatomik farklılıktan türetilmiştir, hastaya
 # özel zamansal gürültüyü temsil ETMEZ. Sadece yeterli kişisel veri birikene
-# kadar (bkz. trend_analysis.compute_personal_margin) geçici fallback olarak
+# kadar (bkz. margin_utils.compute_personal_margin) geçici fallback olarak
 # kullanılır.
 FALLBACK_MIN_PCT_MARGIN = compute_aga_fallback_margin()
-AGA_DERIVED_MIN_PCT_MARGIN = FALLBACK_MIN_PCT_MARGIN
 
 
 # ─── Fonksiyonlar ─────────────────────────────────────────────────────────────
