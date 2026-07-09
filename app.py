@@ -136,20 +136,21 @@ with st.sidebar:
         min_value=1.0, max_value=4.0, value=2.0, step=0.1,
     )
 
-    calibration_size = st.slider(
-        "Seans Sayısı",
-        min_value=2, max_value=12, value=6, step=1,
-    )
+    with st.expander("Gelişmiş Ayarlar"):
+        calibration_size = st.slider(
+            "Kişisel Kalibrasyon Seansı",
+            min_value=2, max_value=12, value=6, step=1,
+        )
 
-    floor_pct = st.slider(
-        "Taban Marj (%) — çok stabil hastalarda minimum",
-        min_value=1.0, max_value=10.0, value=3.0, step=0.5,
-    )
+        floor_pct = st.slider(
+            "Taban Marj (%) — çok stabil hastalarda minimum",
+            min_value=1.0, max_value=10.0, value=3.0, step=0.5,
+        )
 
-    fallback_pct = st.slider(
-        "AGA Fallback (%) — yetersiz veri durumunda",
-        min_value=5.0, max_value=30.0, value=FALLBACK_MIN_PCT_MARGIN, step=0.1,
-    )
+        fallback_pct = st.slider(
+            "AGA Fallback (%) — yetersiz veri durumunda",
+            min_value=5.0, max_value=30.0, value=FALLBACK_MIN_PCT_MARGIN, step=0.1,
+        )
 
     if selected_pid is None:
         st.info("Devam etmek için bir hasta seçin.")
