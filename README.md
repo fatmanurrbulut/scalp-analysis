@@ -154,6 +154,12 @@ devre dışı kalır, tüm gruplar için sabit `min_pct_margin` kullanılır.
 Toplam seans sayısı `window`'dan az olan (hasta, bölge) grupları için
 `direction="insufficient_data"` döner, anomali hesaplanmaz.
 
+**Not (2. seans):** Bir grubun toplam seans sayısı yeterli olsa bile (`n >=
+window`), 2. seansın baseline'ı her zaman tek noktadır (std hesaplanamaz).
+Bu durumda z-score yerine sadece pratik % sapma ile karar verilir — aşarsa
+anomali (`severity="heavy"`, düşük veri güveni), aşmazsa değişim önemsiz
+sayılır. İlk seans (baseline yok) hâlâ hiç kontrol edilmez.
+
 **Çıktı değerleri:**
 
 | Çıktı | Açıklama |

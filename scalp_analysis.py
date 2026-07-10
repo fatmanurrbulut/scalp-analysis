@@ -173,6 +173,11 @@ def detect_anomalies(
         şartı aranır — aşarsa anomali (z=NaN, low_confidence), aşmazsa değişim
         pratikte önemsiz sayılır ve anomali işaretlenmez
 
+    İkinci seans (baseline'da tek nokta olan durum) da benzer şekilde ele
+    alınır: std hesaplanamadığı için sadece pratik % sapma ile karar verilir,
+    aşarsa anomali (severity='heavy', düşük veri güveni), aşmazsa değişim
+    önemsiz sayılır. İlk seans (baseline yok) hiç kontrol edilmez.
+
     is_anomaly=True olan satırlar ayrıca {metric}_severity ile derecelendirilir
     (threshold'a göre RELATİF, is_anomaly/z/direction mantığını değiştirmez,
     sadece ek bilgi):
@@ -223,6 +228,16 @@ def detect_anomalies(
                     # sabit boyutlu pencere: son `window` seans, mevcut haric
                     window_vals = vals[max(0, i - window):i]
                     if len(window_vals) < 2:
+                        # Tek noktalı baseline (genelde 2. seans) — std hesaplanamaz,
+                        # sadece pratik % sapma ile kontrol et (düşük veri güveni)
+                        if len(window_vals) == 1:
+                            m = window_vals.mean()
+                            means[i] = round(m, 2)
+                            pct_deviation = abs(vals[i] - m) / m * 100 if m != 0 else 0
+                            if pct_deviation > metric_margin:
+                                anomalies[i]  = True
+                                directions[i] = "high" if vals[i] > m else "low"
+                                severities[i] = "heavy"
                         continue
                     m = window_vals.mean()
                     s = window_vals.std(ddof=1)
