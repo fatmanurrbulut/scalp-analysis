@@ -15,3 +15,5 @@ services:
       - "8501:8501"
     volumes:
       - ./data:/app/data
+    environment:
+      - PYTHONFAULTHANDLER=1
