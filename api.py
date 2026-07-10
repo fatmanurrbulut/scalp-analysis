@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from clinical_thresholds import get_all_thresholds
+from cusum_analysis import H_MULT_DEFAULT, K_MULT_DEFAULT, compute_cusum_all
 from scalp_analysis import (
     ANOMALY_MIN_PCT_MARGIN,
     ANOMALY_THRESHOLD,
@@ -156,6 +157,37 @@ class ClinicTrendResponse(BaseModel):
     patients:                   list[PatientTrendResponse]
 
 
+# ─── CUSUM DTOs [TASLAK] ──────────────────────────────────────────────────────
+
+class CusumRecord(BaseModel):
+    patient_id:  str
+    region:      str
+    metric:      str
+    session_no:  int | None
+    value:       float
+    s_pos:       float
+    s_neg:       float
+    k:           float
+    h:           float
+    alarm:       bool
+    direction:   str | None
+
+
+class CusumSummary(BaseModel):
+    total_records: int
+    total_alarms:  int
+
+
+class CusumResponse(BaseModel):
+    generated_at:     str
+    method:           str
+    calibration_size: int
+    k_mult:           float
+    h_mult:           float
+    summary:          CusumSummary
+    records:          list[CusumRecord]
+
+
 # ─── Internal Helpers ─────────────────────────────────────────────────────────
 
 _WINDOW_QUERY = Query(
@@ -189,6 +221,14 @@ _CALIBRATION_SIZE_QUERY = Query(
 _FLOOR_PCT_QUERY = Query(
     default=3.0, ge=0.0, le=50.0,
     description="Kişisel CV%'nin düşemeyeceği taban marj (varsayılan: 3.0)",
+)
+_CUSUM_K_MULT_QUERY = Query(
+    default=K_MULT_DEFAULT, ge=0.05, le=3.0,
+    description=f"CUSUM referans kayma çarpanı, k = k_mult * std (varsayılan: {K_MULT_DEFAULT})",
+)
+_CUSUM_H_MULT_QUERY = Query(
+    default=H_MULT_DEFAULT, ge=1.0, le=20.0,
+    description=f"CUSUM karar sınırı çarpanı, h = h_mult * std (varsayılan: {H_MULT_DEFAULT})",
 )
 
 
@@ -646,4 +686,101 @@ async def trend(
         worsening_patients=result["worsening_patients"],
         stable_patients=result["stable_patients"],
         patients=[_to_patient_trend_response(p) for p in result["patients"]],
+    )
+
+
+@app.post(
+    "/cusum",
+    response_model=CusumResponse,
+    tags=["cusum"],
+    summary="[TASLAK] Klinik geneli CUSUM kayma tespiti",
+)
+async def cusum(
+    request: Request,
+    calibration_size: int   = _CALIBRATION_SIZE_QUERY,
+    k_mult:           float = _CUSUM_K_MULT_QUERY,
+    h_mult:           float = _CUSUM_H_MULT_QUERY,
+) -> CusumResponse:
+    """
+    [TASLAK — henüz klinik olarak doğrulanmadı, dashboard'a (app.py) bağlı
+    değil]
+
+    Her hasta × bölge × metrik kombinasyonu için iki taraflı (tabular) CUSUM
+    hesaplar. `/trend`'in (pencere sınırlı) aksine sapmaları baştan itibaren
+    biriktirir, bu yüzden çok yavaş/küçük driftleri teorik olarak yakalayabilir
+    — ama henüz backtest edilmedi.
+
+    **CSV yükleme** (`multipart/form-data`):
+    ```
+    curl -X POST "http://localhost:8000/cusum" -F "file=@data.csv"
+    ```
+
+    **JSON body** (`application/json`):
+    ```json
+    { "records": [{...}, {...}] }
+    ```
+    """
+    content_type = request.headers.get("content-type", "")
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        uploaded = form.get("file")
+        if uploaded is None:
+            raise HTTPException(status_code=400, detail="`file` form alanı eksik")
+        df = _csv_to_df(await uploaded.read())
+
+    elif "application/json" in content_type:
+        body = await request.json()
+        if isinstance(body, list):
+            df = _json_records_to_df(body)
+        elif isinstance(body, dict):
+            records = body.get("records")
+            if not isinstance(records, list):
+                raise HTTPException(
+                    status_code=422,
+                    detail='JSON body "records" listesi içermeli: {"records": [{...}]}',
+                )
+            df = _json_records_to_df(records)
+        else:
+            raise HTTPException(status_code=422, detail="JSON body bir liste veya obje olmalı")
+
+    else:
+        raise HTTPException(
+            status_code=415,
+            detail="Desteklenmeyen content-type. Kullanın: multipart/form-data veya application/json",
+        )
+
+    _validate_df(df)
+
+    records: list[dict] = []
+    for metric in METRICS:
+        metric_df = compute_cusum_all(df, metric, calibration_size, k_mult, h_mult)
+        for _, row in metric_df.iterrows():
+            records.append({
+                "patient_id": row["patient_id"],
+                "region":     row["region"],
+                "metric":     metric,
+                "session_no": None if pd.isna(row["session_no"]) else int(row["session_no"]),
+                "value":      float(row["value"]),
+                "s_pos":      float(row["s_pos"]),
+                "s_neg":      float(row["s_neg"]),
+                "k":          float(row["k"]),
+                "h":          float(row["h"]),
+                "alarm":      bool(row["alarm"]),
+                "direction":  None if pd.isna(row["direction"]) else row["direction"],
+            })
+
+    total_alarms = sum(1 for r in records if r["alarm"])
+
+    return CusumResponse(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        method=f"cusum_calibration_{calibration_size}_kmult_{k_mult}_hmult_{h_mult}",
+        calibration_size=calibration_size,
+        k_mult=k_mult,
+        h_mult=h_mult,
+        summary=CusumSummary(
+            total_records=len(records),
+            total_alarms=total_alarms,
+        ),
+        records=[CusumRecord(**r) for r in records],
     )
