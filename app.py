@@ -228,6 +228,51 @@ c4.metric("Son Seans", last_date_str)
 st.divider()
 
 
+# ── CUSUM Kayma Tespiti ─────────────────────────────────────────────────────────
+
+with st.expander("🧪 CUSUM Kayma Tespiti"):
+    st.caption(
+        "`/analyze` ve `/trend`'in aksine sapmaları 1. seanstan itibaren biriktirir "
+        "— çok yavaş/küçük driftleri teorik olarak erken yakalayabilir."
+    )
+
+    cusum_results = _cusum(df_raw, selected_pid, calibration_size)
+
+    any_alarm = False
+    for metric, label in METRICS.items():
+        cusum_df = cusum_results.get(metric)
+        if cusum_df is None or cusum_df.empty:
+            continue
+
+        st.markdown(f"**{label}**")
+        alarms = cusum_df[cusum_df["alarm"]]
+        if alarms.empty:
+            st.caption("Alarm yok.")
+            continue
+
+        any_alarm = True
+        alarm_disp = alarms.copy()
+        alarm_disp["Yön"] = alarm_disp["direction"].map({"high": "↑ Yüksek", "low": "↓ Düşük"})
+        st.dataframe(
+            alarm_disp[["region", "session_no", "value", "s_pos", "s_neg", "Yön"]].rename(
+                columns={
+                    "region":     "Bölge",
+                    "session_no": "Seans",
+                    "value":      "Değer",
+                    "s_pos":      "S+",
+                    "s_neg":      "S-",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if not any_alarm:
+        st.caption("Hiçbir bölge/metrikte CUSUM alarmı tetiklenmedi.")
+
+st.divider()
+
+
 # ── Chart renderer ─────────────────────────────────────────────────────────────
 
 def _render_chart(metric: str, label: str) -> None:
@@ -526,54 +571,3 @@ else:
         f"✓ Seçilen eşik (±{threshold:.1f} std, kişisel kalibrasyon: ilk {calibration_size} seans, "
         f"taban %{floor_pct:.1f}) için outlier bulunamadı."
     )
-
-
-# ── CUSUM (Cumulative Sum) — [TASLAK/DENEYSEL] ─────────────────────────────────
-# Henüz klinik olarak doğrulanmadı, backtest edilmedi — bu yüzden yukarıdaki
-# özet kartlarına (outlier_count, severity_counts) veya klinik yön kararına
-# HİÇ katılmaz. Sadece bilgi amaçlı, kapalı bir panel.
-
-st.divider()
-with st.expander(
-    "🧪 CUSUM Kayma Tespiti — [TASLAK/DENEYSEL, henüz klinik olarak doğrulanmadı]"
-):
-    st.caption(
-        "`/analyze` ve `/trend`'in aksine sapmaları 1. seanstan itibaren "
-        "biriktirir — çok yavaş/küçük driftleri teorik olarak erken yakalayabilir. "
-        "Henüz backtest edilmedi, yukarıdaki hiçbir özet/karara katılmaz, "
-        "sadece bilgi amaçlıdır."
-    )
-
-    cusum_results = _cusum(df_raw, selected_pid, calibration_size)
-
-    any_alarm = False
-    for metric, label in METRICS.items():
-        cusum_df = cusum_results.get(metric)
-        if cusum_df is None or cusum_df.empty:
-            continue
-
-        st.markdown(f"**{label}**")
-        alarms = cusum_df[cusum_df["alarm"]]
-        if alarms.empty:
-            st.caption("Alarm yok.")
-            continue
-
-        any_alarm = True
-        alarm_disp = alarms.copy()
-        alarm_disp["Yön"] = alarm_disp["direction"].map({"high": "↑ Yüksek", "low": "↓ Düşük"})
-        st.dataframe(
-            alarm_disp[["region", "session_no", "value", "s_pos", "s_neg", "Yön"]].rename(
-                columns={
-                    "region":     "Bölge",
-                    "session_no": "Seans",
-                    "value":      "Değer",
-                    "s_pos":      "S+",
-                    "s_neg":      "S-",
-                }
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    if not any_alarm:
-        st.caption("Hiçbir bölge/metrikte CUSUM alarmı tetiklenmedi.")
