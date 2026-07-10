@@ -228,51 +228,6 @@ c4.metric("Son Seans", last_date_str)
 st.divider()
 
 
-# ── CUSUM Kayma Tespiti ─────────────────────────────────────────────────────────
-
-with st.expander("🧪 CUSUM Kayma Tespiti"):
-    st.caption(
-        "`/analyze` ve `/trend`'in aksine sapmaları 1. seanstan itibaren biriktirir "
-        "— çok yavaş/küçük driftleri teorik olarak erken yakalayabilir."
-    )
-
-    cusum_results = _cusum(df_raw, selected_pid, calibration_size)
-
-    any_alarm = False
-    for metric, label in METRICS.items():
-        cusum_df = cusum_results.get(metric)
-        if cusum_df is None or cusum_df.empty:
-            continue
-
-        st.markdown(f"**{label}**")
-        alarms = cusum_df[cusum_df["alarm"]]
-        if alarms.empty:
-            st.caption("Alarm yok.")
-            continue
-
-        any_alarm = True
-        alarm_disp = alarms.copy()
-        alarm_disp["Yön"] = alarm_disp["direction"].map({"high": "↑ Yüksek", "low": "↓ Düşük"})
-        st.dataframe(
-            alarm_disp[["region", "session_no", "value", "s_pos", "s_neg", "Yön"]].rename(
-                columns={
-                    "region":     "Bölge",
-                    "session_no": "Seans",
-                    "value":      "Değer",
-                    "s_pos":      "S+",
-                    "s_neg":      "S-",
-                }
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    if not any_alarm:
-        st.caption("Hiçbir bölge/metrikte CUSUM alarmı tetiklenmedi.")
-
-st.divider()
-
-
 # ── Chart renderer ─────────────────────────────────────────────────────────────
 
 def _render_chart(metric: str, label: str) -> None:
@@ -512,6 +467,50 @@ else:
                 use_container_width=True,
                 hide_index=True,
             )
+
+
+# ── CUSUM Kayma Tespiti ─────────────────────────────────────────────────────────
+
+st.divider()
+st.subheader("🧪 CUSUM Kayma Tespiti")
+st.caption(
+    "`/analyze` ve `/trend`'in aksine sapmaları 1. seanstan itibaren biriktirir "
+    "— çok yavaş/küçük driftleri teorik olarak erken yakalayabilir."
+)
+
+cusum_results = _cusum(df_raw, selected_pid, calibration_size)
+
+any_alarm = False
+for metric, label in METRICS.items():
+    cusum_df = cusum_results.get(metric)
+    if cusum_df is None or cusum_df.empty:
+        continue
+
+    st.markdown(f"**{label}**")
+    alarms = cusum_df[cusum_df["alarm"]]
+    if alarms.empty:
+        st.caption("Alarm yok.")
+        continue
+
+    any_alarm = True
+    alarm_disp = alarms.copy()
+    alarm_disp["Yön"] = alarm_disp["direction"].map({"high": "↑ Yüksek", "low": "↓ Düşük"})
+    st.dataframe(
+        alarm_disp[["region", "session_no", "value", "s_pos", "s_neg", "Yön"]].rename(
+            columns={
+                "region":     "Bölge",
+                "session_no": "Seans",
+                "value":      "Değer",
+                "s_pos":      "S+",
+                "s_neg":      "S-",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+if not any_alarm:
+    st.caption("Hiçbir bölge/metrikte CUSUM alarmı tetiklenmedi.")
 
 
 # ── Anomali detay tablosu ───────────────────────────────────────────────────────
