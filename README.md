@@ -152,6 +152,47 @@ tablosundan türetilmiş geçici bir fallback kullanılır:
 fallback_pct = 0.5 × mean(CV%(AGA density), CV%(AGA diameter_um))   # ≈ %10.7
 ```
 
+**Neden bu formül?** Yeni bir hastada (veya ilk `calibration_size` seans
+dolmadan) kişisel gürültü tahmini için henüz veri yok, ama sistemin yine de
+bir karar vermesi gerekiyor. Rastgele bir sabit sayı uydurmak yerine, sistemde
+zaten bulunan `ADVANCED_AGA_REFERENCE` tablosundan (7 bölgenin AGA referans
+yoğunluk/çap değerleri) türetilen bir sayı kullanılıyor — en azından mevcut
+bir klinik referansa dayansın diye.
+
+**Adım adım (gerçek sayılarla):**
+
+```
+densities = [95, 130, 130, 80, 90, 120, 175]   # 7 bölgenin AGA referans yoğunluğu
+diameters = [42, 55, 55, 38, 44, 52, 65]        # 7 bölgenin AGA referans çapı (µm)
+
+density_cv_pct  = pstdev(densities)  / mean(densities)  × 100   = 25.60
+diameter_cv_pct = pstdev(diameters) / mean(diameters) × 100   = 17.24
+avg_cv_pct      = (25.60 + 17.24) / 2                            = 21.42
+fallback_pct    = avg_cv_pct × 0.5                               = 10.71 → round(1) = 10.7
+```
+
+Alt tercihlerin gerekçesi:
+
+- **CV% (std/mean), ham std değil:** Yoğunluk (~80-175 hair/cm²) ile çap
+  (~38-65 µm) tamamen farklı ölçeklerde; ham std'leri birleştirmek anlamsız
+  olurdu, CV% ölçekten bağımsız olduğu için ikisi birlikte ortalanabiliyor.
+- **`pstdev` (popülasyon), `stdev` (örneklem) değil:** Hesap, tablodaki
+  7 bölgenin **tamamı** üzerinden yapılıyor — bir üst popülasyondan örneklem
+  çekilmiyor, elimizdeki tüm referans noktalarının kendi varyasyonu
+  ölçülüyor, bu yüzden Bessel düzeltmesi (n-1) yok.
+- **Yoğunluk + çap ortalaması:** Sistemde takip edilen iki ana metrik bu
+  ikisi — tek bir fallback sayısı ikisine de uygulanabilsin diye ortalanıyor.
+- **`tv_ratio` hesaba katılmıyor:** T/V oranı ölçek olarak daha oynak;
+  dahil edilse ortalamayı yapay şekilde şişirirdi.
+- **× 0.5 (yarıya indirme):** `avg_cv_pct` (%21.4) **bölgeler arası**
+  (Frontal vs Occipital vs Vertex...) anatomik farkı ölçüyor — bu, tek bir
+  hastanın tek bir bölgesindeki seanslar-arası doğal gürültüden çok daha
+  büyük bir varyasyon kaynağı. Ham %21.4'ü doğrudan marj olarak kullanmak
+  aşırı gevşek/toleranslı olur (gerçek anomalileri kaçırabilir); yarıya
+  indirilerek daha muhafazakar bir sayıya (%10.7) çekiliyor. **Bu katsayının
+  kendisi için bir formül kaynağı veya klinik atıf yok** — saf bir
+  mühendislik/sezgisel ayar, resmi bir istatistiksel türetim değil.
+
 `use_personal_calibration=False` verilirse kişisel kalibrasyon tamamen
 devre dışı kalır, tüm gruplar için sabit `min_pct_margin` kullanılır.
 
