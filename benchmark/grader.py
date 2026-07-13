@@ -29,6 +29,8 @@ def _event_key(a: dict) -> tuple:
 
 
 def grade_anomalies(expected: list[dict], actual: list[dict]) -> dict:
+    """Beklenen ve gerçek anomali listelerini 5'li anahtarla (patient_id, session_no,
+    region, metric, direction) karşılaştırıp tp/fp/fn ve huni-katmanlı doğruluk sayaçlarını döner."""
     expected_set = {_anomaly_key(a) for a in expected}
     actual_set = {_anomaly_key(a) for a in actual}
 
@@ -80,6 +82,7 @@ def _trend_key(t: dict) -> tuple:
 
 
 def grade_trends(expected: list[dict], actual: list[dict]) -> dict:
+    """Beklenen trend yönlerini (patient_id, region) anahtarıyla gerçek sonuçla karşılaştırır."""
     actual_by_key = {_trend_key(t): t for t in actual}
     correct = 0
     mismatches = []
@@ -97,6 +100,7 @@ def _validation_key(v: dict) -> tuple:
 
 
 def grade_validation_errors(expected: list[dict], actual: list[dict]) -> dict:
+    """Beklenen doğrulama hatalarını (type, column) anahtarıyla gerçek issues listesiyle karşılaştırır."""
     expected_set = {_validation_key(v) for v in expected}
     actual_set = {_validation_key(v) for v in actual}
     correct = len(expected_set & actual_set)

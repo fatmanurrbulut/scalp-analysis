@@ -23,6 +23,7 @@ class ScenarioSchemaError(ValueError):
 
 
 def validate_config(config: dict, scenario_name: str) -> None:
+    """config.json'ın zorunlu alanlara ve desteklenen analysis_type değerine sahip olduğunu doğrular."""
     missing = [k for k in _CONFIG_REQUIRED_KEYS if k not in config]
     if missing:
         raise ScenarioSchemaError(f"{scenario_name}/config.json eksik alanlar: {missing}")
@@ -36,6 +37,7 @@ def validate_config(config: dict, scenario_name: str) -> None:
 
 
 def validate_expected(expected: dict, scenario_name: str) -> None:
+    """expected.json'ın zorunlu alanlara ve her liste öğesinin gerekli anahtarlara sahip olduğunu doğrular."""
     missing = [k for k in _EXPECTED_REQUIRED_KEYS if k not in expected]
     if missing:
         raise ScenarioSchemaError(f"{scenario_name}/expected.json eksik alanlar: {missing}")

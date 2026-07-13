@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 
 from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN
-from margin_utils import compute_personal_margin, prepare_session_df
+from margin_utils import compute_personal_margin
 
 
 # ─── Sabitler ────────────────────────────────────────────────────────────────
@@ -102,6 +102,10 @@ REQUIRED_COLUMNS = {
 # ─── Veri Yükleme ────────────────────────────────────────────────────────────
 
 def load_data(filepath: str, patient_id: str | None = None) -> pd.DataFrame:
+    # data_validation, REQUIRED_COLUMNS için bu modülü import ettiğinden döngüsel
+    # import'u önlemek için burada (fonksiyon içinde, modül seviyesinde değil) import edilir.
+    from data_validation import DataValidationError, validate_and_prepare
+
     path = Path(filepath)
     if not path.exists():
         print(f"{C.RED}[HATA] Dosya bulunamadı: {filepath}{C.RESET}")
@@ -109,12 +113,14 @@ def load_data(filepath: str, patient_id: str | None = None) -> pd.DataFrame:
 
     df = pd.read_csv(path)
 
-    missing = REQUIRED_COLUMNS - set(df.columns)
-    if missing:
-        print(f"{C.RED}[HATA] Eksik sütunlar: {missing}{C.RESET}")
+    try:
+        df = validate_and_prepare(df, require_bio=False)
+    except DataValidationError as exc:
+        print(f"{C.RED}[HATA] Veri doğrulama sorunları:{C.RESET}")
+        for issue in exc.issues:
+            location = f"{len(issue['row_indices'])} satır" if issue["row_indices"] else "dosya geneli"
+            print(f"{C.RED}  - {issue['type']} ({issue['column']}) — {location}{C.RESET}")
         sys.exit(1)
-
-    df = prepare_session_df(df)
 
     if patient_id:
         df = df[df["patient_id"] == patient_id]

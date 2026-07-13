@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN, get_all_thresholds
-from margin_utils import prepare_session_df
+from data_validation import DataValidationError, validate_and_prepare
 from scalp_analysis import ANOMALY_WINDOW, detect_anomalies
 from trend_analysis import analyze_patient_trend
 
@@ -54,7 +54,10 @@ def _to_rgba(color: str, alpha: float) -> str:
 @st.cache_data(show_spinner=False)
 def _load(file_bytes: bytes) -> pd.DataFrame:
     df = pd.read_csv(io.BytesIO(file_bytes))
-    return prepare_session_df(df)
+    # require_bio=False: anomali sekmeleri hair_type olmadan da çalışır (bkz. sağ
+    # paneldeki T/V sayımı ve klinik özet — hair_type yoksa zaten kendi kontrolleriyle
+    # nazikçe atlanıyor). API'deki /analyze ile aynı doğrulama seviyesi.
+    return validate_and_prepare(df, require_bio=False)
 
 
 @st.cache_data(show_spinner=False)
@@ -108,7 +111,14 @@ with st.sidebar:
         st.info("Sol panelden CSV dosyası yükleyin.")
         st.stop()
 
-    df_raw = _load(uploaded.read())
+    try:
+        df_raw = _load(uploaded.read())
+    except DataValidationError as exc:
+        st.error("CSV dosyasında veri kalitesi sorunları bulundu, analiz yapılamıyor:")
+        for issue in exc.issues:
+            location = f"{len(issue['row_indices'])} satır" if issue["row_indices"] else "dosya geneli"
+            st.error(f"- **{issue['type']}** (`{issue['column']}`) — {location}")
+        st.stop()
 
     patient_map: dict[str, str] = (
         df_raw[["patient_id", "first_name", "last_name"]]

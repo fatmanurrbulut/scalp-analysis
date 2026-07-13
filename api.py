@@ -201,6 +201,15 @@ _FLOOR_PCT_QUERY = Query(
     default=3.0, ge=0.0, le=50.0,
     description="Kişisel CV%'nin düşemeyeceği taban marj (varsayılan: 3.0)",
 )
+_FALLBACK_PCT_QUERY = Query(
+    default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
+    description=(
+        "Kişisel kalibrasyon için yeterli/temiz veri yokken kullanılan AGA fallback % marjı "
+        f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN}). Yalnızca use_personal_calibration=true iken etkilidir."
+    ),
+)
+
+
 def _validate_and_prepare(df: pd.DataFrame, require_bio: bool) -> pd.DataFrame:
     try:
         return validate_and_prepare(df, require_bio=require_bio)
@@ -361,6 +370,7 @@ async def analyze(
     use_personal_calibration: bool  = _USE_PERSONAL_CALIBRATION_QUERY,
     calibration_size:         int   = _CALIBRATION_SIZE_QUERY,
     floor_pct:                float = _FLOOR_PCT_QUERY,
+    fallback_pct:             float = _FALLBACK_PCT_QUERY,
 ) -> AnalyzeResponse:
     """
     İki içerik türü desteklenir:
@@ -382,7 +392,10 @@ async def analyze(
     `value`, `baseline_mean`, `baseline_std`, `z_score`, `direction` döner.
     """
     df = await _df_from_request(request)
-    return _run_analysis(df, window, threshold, min_pct_margin, use_personal_calibration, calibration_size, floor_pct)
+    return _run_analysis(
+        df, window, threshold, min_pct_margin, use_personal_calibration,
+        calibration_size, floor_pct, fallback_pct,
+    )
 
 
 @app.get(
@@ -399,6 +412,7 @@ async def analyze_patient(
     use_personal_calibration: bool  = _USE_PERSONAL_CALIBRATION_QUERY,
     calibration_size:         int   = _CALIBRATION_SIZE_QUERY,
     floor_pct:                float = _FLOOR_PCT_QUERY,
+    fallback_pct:             float = _FALLBACK_PCT_QUERY,
 ) -> AnalyzeResponse:
     """
     Belirli bir hasta için anomali analizi.
@@ -423,7 +437,7 @@ async def analyze_patient(
     df = _csv_to_df(path.read_bytes())
     return _run_analysis(
         df, window, threshold, min_pct_margin,
-        use_personal_calibration, calibration_size, floor_pct,
+        use_personal_calibration, calibration_size, floor_pct, fallback_pct,
         patient_id=patient_id,
     )
 
@@ -448,13 +462,7 @@ async def trend_patient(
         default=2.0, ge=0.1, le=10.0,
         description="Bant genişliği için std çarpanı (varsayılan: 2.0)",
     ),
-    fallback_pct: float = Query(
-        default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
-        description=(
-            "Kişisel kalibrasyon için yeterli veri yokken kullanılan AGA fallback % marjı "
-            f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN})"
-        ),
-    ),
+    fallback_pct: float = _FALLBACK_PCT_QUERY,
     calibration_size: int = _CALIBRATION_SIZE_QUERY,
     floor_pct: float = _FLOOR_PCT_QUERY,
 ) -> PatientTrendResponse:
@@ -534,13 +542,7 @@ async def trend(
         default=2.0, ge=0.1, le=10.0,
         description="Bant genişliği için std çarpanı (varsayılan: 2.0)",
     ),
-    fallback_pct: float = Query(
-        default=ANOMALY_MIN_PCT_MARGIN, ge=0.0, le=100.0,
-        description=(
-            "Kişisel kalibrasyon için yeterli veri yokken kullanılan AGA fallback % marjı "
-            f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN})"
-        ),
-    ),
+    fallback_pct: float = _FALLBACK_PCT_QUERY,
     calibration_size: int = _CALIBRATION_SIZE_QUERY,
     floor_pct: float = _FLOOR_PCT_QUERY,
 ) -> ClinicTrendResponse:

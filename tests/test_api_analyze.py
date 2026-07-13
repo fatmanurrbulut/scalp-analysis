@@ -24,6 +24,17 @@ def test_analyze_happy_path_returns_new_explainability_fields(client):
     assert "calibration_points_used" in anomaly
 
 
+def test_analyze_accepts_fallback_pct_query_param(client):
+    df = make_df("P1", "Vertex", dates_from(2), [100, 101], [50, 51], ["Terminal"] * 2)
+    resp = client.post(
+        "/analyze",
+        params={"fallback_pct": 20.0},
+        files={"file": ("data.csv", df_to_csv_bytes(df), "text/csv")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["fallback_margin"] == 20.0
+
+
 def test_analyze_invalid_date_returns_422_with_structured_issues(client):
     df = make_df("P1", "Vertex", ["not-a-date"], [100], [50], ["Terminal"])
     resp = client.post("/analyze", files={"file": ("data.csv", df_to_csv_bytes(df), "text/csv")})

@@ -163,6 +163,7 @@ def _run_scenario(name: str, scenario_dir: Path) -> dict:
 
 
 def run_all() -> dict:
+    """scenarios/ altındaki tüm senaryoları çalıştırır ve generated_at hariç tam raporu döner."""
     scenario_dirs = sorted(p for p in SCENARIOS_DIR.iterdir() if p.is_dir())
     results = []
     for scenario_dir in scenario_dirs:
@@ -211,6 +212,7 @@ def run_all() -> dict:
 
 
 def main() -> int:
+    """CLI giriş noktası: benchmark'ı çalıştırır, raporu diske yazar, özet basar; başarısız senaryo varsa 1 döner."""
     from datetime import datetime, timezone
 
     report = run_all()

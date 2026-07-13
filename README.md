@@ -164,6 +164,7 @@ devre dışı kalır, tüm gruplar için sabit `min_pct_margin` kullanılır.
 | `use_personal_calibration` | `true` | Kişisel kalibrasyon açık/kapalı |
 | `calibration_size` | `6` | Kişisel kalibrasyon için kullanılan ilk seans sayısı |
 | `floor_pct` | `3.0` | Kişisel CV%'nin düşemeyeceği taban marj |
+| `fallback_pct` | `10.7` | Kişisel kalibrasyon için yeterli/temiz veri yokken kullanılan AGA fallback % marjı (yalnızca `use_personal_calibration=true` iken etkilidir) |
 | `min_pct_margin` | `10.7` | Yalnızca `use_personal_calibration=false` iken kullanılan sabit marj |
 
 Toplam seans sayısı `window`'dan az olan (hasta, bölge) grupları için
