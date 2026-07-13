@@ -18,12 +18,14 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from clinical_thresholds import get_all_thresholds
+from margin_utils import prepare_session_df
 from scalp_analysis import (
     ANOMALY_MIN_PCT_MARGIN,
     ANOMALY_THRESHOLD,
     ANOMALY_WINDOW,
     METRICS,
     REQUIRED_COLUMNS,
+    anomaly_row_to_dict,
     detect_anomalies,
 )
 from trend_analysis import (
@@ -200,11 +202,13 @@ def _validate_df(df: pd.DataFrame) -> None:
 
 
 def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
-    df["session_date"] = pd.to_datetime(df["session_date"], errors="coerce")
-    df["session_no"] = df.groupby("patient_id")["session_date"].transform(
-        lambda x: x.rank(method="dense").astype(int)
-    )
-    return df.sort_values(["patient_id", "region", "session_no"])
+    missing = {"patient_id", "session_date", "region"} - set(df.columns)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "Eksik sütunlar", "columns": sorted(missing)},
+        )
+    return prepare_session_df(df)
 
 
 def _validate_bio_df(df: pd.DataFrame) -> None:
@@ -218,16 +222,18 @@ def _validate_bio_df(df: pd.DataFrame) -> None:
 
 def _csv_to_df(content: bytes) -> pd.DataFrame:
     try:
-        return _prepare_df(pd.read_csv(io.BytesIO(content)))
+        df = pd.read_csv(io.BytesIO(content))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"CSV ayrıştırma hatası: {exc}") from exc
+    return _prepare_df(df)
 
 
 def _json_records_to_df(records: list) -> pd.DataFrame:
     try:
-        return _prepare_df(pd.DataFrame(records))
+        df = pd.DataFrame(records)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"JSON dönüştürme hatası: {exc}") from exc
+    return _prepare_df(df)
 
 
 def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
@@ -237,27 +243,7 @@ def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
         if col not in df.columns:
             continue
         for _, row in df[df[col]].iterrows():
-            z       = row[f"{metric}_z"]
-            z_score = None if pd.isna(z) else float(z)
-            margin_used = row.get(f"{metric}_margin_used")
-            margin_excluded = row.get(f"{metric}_margin_excluded")
-            found.append({
-                "patient_id":     row["patient_id"],
-                "patient_name":   f"{row['first_name']} {row['last_name']}",
-                "session_no":     int(row["session_no"]),
-                "region":         row["region"],
-                "metric":         metric,
-                "value":          float(row[metric]),
-                "baseline_mean":  float(row[f"{metric}_baseline_mean"]),
-                "baseline_std":   float(row[f"{metric}_baseline_std"]),
-                "z_score":        z_score,
-                "direction":      row[f"{metric}_direction"],
-                "low_confidence": z_score is None,
-                "severity":       row.get(f"{metric}_severity"),
-                "margin_used":    float(margin_used) if margin_used is not None else None,
-                "margin_source":  row.get(f"{metric}_margin_source"),
-                "margin_excluded": int(margin_excluded) if margin_excluded is not None else None,
-            })
+            found.append(anomaly_row_to_dict(row, metric))
     return found
 
 
@@ -314,6 +300,39 @@ def _run_analysis(
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
+async def _df_from_request(request: Request) -> pd.DataFrame:
+    content_type = request.headers.get("content-type", "")
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        uploaded = form.get("file")
+        if uploaded is None:
+            raise HTTPException(status_code=400, detail="`file` form alanı eksik")
+        return _csv_to_df(await uploaded.read())
+
+    if "application/json" in content_type:
+        body = await request.json()
+        if isinstance(body, list):
+            return _json_records_to_df(body)
+        if isinstance(body, dict):
+            records = body.get("records")
+            if not isinstance(records, list):
+                raise HTTPException(
+                    status_code=422,
+                    detail='JSON body "records" listesi içermeli: {"records": [{...}]}',
+                )
+            return _json_records_to_df(records)
+        raise HTTPException(status_code=422, detail="JSON body bir liste veya obje olmalı")
+
+    raise HTTPException(
+        status_code=415,
+        detail=(
+            "Desteklenmeyen content-type. "
+            "Kullanın: multipart/form-data (CSV yükleme) veya application/json"
+        ),
+    )
+
+
 def _to_patient_trend_response(data: dict) -> PatientTrendResponse:
     return PatientTrendResponse(
         patient_id=data["patient_id"],
@@ -368,42 +387,7 @@ async def analyze(
     Her anomali için `patient_id`, `session_no`, `region`, `metric`,
     `value`, `baseline_mean`, `baseline_std`, `z_score`, `direction` döner.
     """
-    content_type = request.headers.get("content-type", "")
-
-    if "multipart/form-data" in content_type:
-        form     = await request.form()
-        uploaded = form.get("file")
-        if uploaded is None:
-            raise HTTPException(status_code=400, detail="`file` form alanı eksik")
-        df = _csv_to_df(await uploaded.read())
-
-    elif "application/json" in content_type:
-        body = await request.json()
-        if isinstance(body, list):
-            df = _json_records_to_df(body)
-        elif isinstance(body, dict):
-            records = body.get("records")
-            if not isinstance(records, list):
-                raise HTTPException(
-                    status_code=422,
-                    detail='JSON body "records" listesi içermeli: {"records": [{...}]}',
-                )
-            df = _json_records_to_df(records)
-        else:
-            raise HTTPException(
-                status_code=422,
-                detail="JSON body bir liste veya obje olmalı",
-            )
-
-    else:
-        raise HTTPException(
-            status_code=415,
-            detail=(
-                "Desteklenmeyen content-type. "
-                "Kullanın: multipart/form-data (CSV yükleme) veya application/json"
-            ),
-        )
-
+    df = await _df_from_request(request)
     return _run_analysis(df, window, threshold, min_pct_margin, use_personal_calibration, calibration_size, floor_pct)
 
 
@@ -589,36 +573,7 @@ async def trend(
       `calibration_points_used` bilgisi
     - `patients`: her hasta için ayrı `PatientTrendResponse`
     """
-    content_type = request.headers.get("content-type", "")
-
-    if "multipart/form-data" in content_type:
-        form = await request.form()
-        uploaded = form.get("file")
-        if uploaded is None:
-            raise HTTPException(status_code=400, detail="`file` form alanı eksik")
-        df = _csv_to_df(await uploaded.read())
-
-    elif "application/json" in content_type:
-        body = await request.json()
-        if isinstance(body, list):
-            df = _json_records_to_df(body)
-        elif isinstance(body, dict):
-            records = body.get("records")
-            if not isinstance(records, list):
-                raise HTTPException(
-                    status_code=422,
-                    detail='JSON body "records" listesi içermeli: {"records": [{...}]}',
-                )
-            df = _json_records_to_df(records)
-        else:
-            raise HTTPException(status_code=422, detail="JSON body bir liste veya obje olmalı")
-
-    else:
-        raise HTTPException(
-            status_code=415,
-            detail="Desteklenmeyen content-type. Kullanın: multipart/form-data veya application/json",
-        )
-
+    df = await _df_from_request(request)
     _validate_bio_df(df)
     result = analyze_clinic_trend(
         df,

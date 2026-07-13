@@ -18,6 +18,22 @@ CONTAMINATION_THRESHOLD = 2.0   # leave-one-out z-score esigi (kalibrasyon setin
 CONTAMINATION_MIN_PCT   = 15.0  # pratik esik: bunun altindaki sapma "aykiri" sayilmaz
 
 
+def prepare_session_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    session_date'i parse edip gün hassasiyetine normalize eder (saat bileşeni
+    session_no eşleştirmesini ve tarih bazlı set/karşılaştırmaları bozmasın
+    diye), session_no'yu (patient_id başına dense rank) hesaplar, sıralar.
+
+    api.py, app.py ve scalp_analysis.py aynı hazırlık adımını ayrı ayrı
+    uyguluyordu; tek noktadan burada yapılır.
+    """
+    df["session_date"] = pd.to_datetime(df["session_date"], errors="coerce").dt.normalize()
+    df["session_no"] = df.groupby("patient_id")["session_date"].transform(
+        lambda x: x.rank(method="dense").astype(int)
+    )
+    return df.sort_values(["patient_id", "region", "session_no"])
+
+
 def _detect_internal_outliers(
     vals: pd.Series,
     threshold: float,

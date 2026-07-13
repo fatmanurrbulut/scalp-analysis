@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN, get_all_thresholds
+from margin_utils import prepare_session_df
 from scalp_analysis import ANOMALY_WINDOW, detect_anomalies
 from trend_analysis import analyze_patient_trend
 
@@ -53,12 +54,7 @@ def _to_rgba(color: str, alpha: float) -> str:
 @st.cache_data(show_spinner=False)
 def _load(file_bytes: bytes) -> pd.DataFrame:
     df = pd.read_csv(io.BytesIO(file_bytes))
-    df["session_date"] = pd.to_datetime(df["session_date"], errors="coerce")
-    # session_no: rank unique dates per patient (same date → same session_no)
-    df["session_no"] = df.groupby("patient_id")["session_date"].transform(
-        lambda x: x.rank(method="dense").astype(int)
-    )
-    return df.sort_values(["patient_id", "region", "session_no"])
+    return prepare_session_df(df)
 
 
 @st.cache_data(show_spinner=False)
@@ -348,7 +344,7 @@ with right_col:
             try:
                 if pd.Timestamp(row["Tarih"]) in outlier_sessions:
                     return [_RED] * len(row)
-            except Exception:
+            except (ValueError, TypeError):
                 pass
             return [_NORM] * len(row)
 
@@ -391,8 +387,14 @@ else:
         margin_source = region.get("margin_source")
         direction_basis = region.get("direction_basis")
         # "Yön" kararını GERÇEKTEN hangi sayı verdi: window_avg -> pencere ortalaması,
-        # last_session -> son seans farkı (yeterli veri olmadığı için fallback)
-        basis_label = "pencere ort." if direction_basis == "window_avg" else "son seans"
+        # last_session -> son seans farkı (yeterli veri olmadığı için fallback),
+        # None -> hiçbir delta hesaplanmadı (n < 2 seans)
+        if direction_basis == "window_avg":
+            basis_label = "pencere ort."
+        elif direction_basis == "last_session":
+            basis_label = "son seans"
+        else:
+            basis_label = "—"
         clinical_rows.append({
             "Bölge": region["region"],
             "Yön": region["direction"],

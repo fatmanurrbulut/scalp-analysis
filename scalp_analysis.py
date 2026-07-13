@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 
 from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN
-from margin_utils import compute_personal_margin
+from margin_utils import compute_personal_margin, prepare_session_df
 
 
 # ─── Sabitler ────────────────────────────────────────────────────────────────
@@ -113,11 +113,7 @@ def load_data(filepath: str, patient_id: str | None = None) -> pd.DataFrame:
         print(f"{C.RED}[HATA] Eksik sütunlar: {missing}{C.RESET}")
         sys.exit(1)
 
-    df["session_date"] = pd.to_datetime(df["session_date"], errors="coerce")
-    df["session_no"] = df.groupby("patient_id")["session_date"].transform(
-        lambda x: x.rank(method="dense").astype(int)
-    )
-    df = df.sort_values(["patient_id", "region", "session_no"])
+    df = prepare_session_df(df)
 
     if patient_id:
         df = df[df["patient_id"] == patient_id]
@@ -286,6 +282,31 @@ def detect_anomalies(
 
 # ─── Konsol Çıktısı ──────────────────────────────────────────────────────────
 
+def anomaly_row_to_dict(row: pd.Series, metric: str) -> dict:
+    """Bir anomali satırından rapor/API için ortak alan setini üretir (CLI JSON raporu ve FastAPI /analyze aynı şekli kullanır)."""
+    z = row[f"{metric}_z"]
+    z_score = None if pd.isna(z) else float(z)
+    margin_used = row.get(f"{metric}_margin_used")
+    margin_excluded = row.get(f"{metric}_margin_excluded")
+    return {
+        "patient_id":     row["patient_id"],
+        "patient_name":   f"{row['first_name']} {row['last_name']}",
+        "session_no":     int(row["session_no"]),
+        "region":         row["region"],
+        "metric":         metric,
+        "value":          float(row[metric]),
+        "baseline_mean":  float(row[f"{metric}_baseline_mean"]),
+        "baseline_std":   float(row[f"{metric}_baseline_std"]),
+        "z_score":        z_score,
+        "direction":      row[f"{metric}_direction"],
+        "low_confidence": z_score is None,
+        "severity":       row.get(f"{metric}_severity"),
+        "margin_used":    float(margin_used) if margin_used is not None else None,
+        "margin_source":  row.get(f"{metric}_margin_source"),
+        "margin_excluded": int(margin_excluded) if margin_excluded is not None else None,
+    }
+
+
 def print_summary(df: pd.DataFrame) -> None:
     section("VERİ ÖZETİ")
     print(f"  Toplam kayıt  : {len(df)}")
@@ -322,10 +343,8 @@ def print_anomalies(
         for _, row in anomalies.iterrows():
             z     = row[f"{metric}_z"]
             bm    = row[f"{metric}_baseline_mean"]
-            bs    = row[f"{metric}_baseline_std"]
             val   = row[metric]
             sno   = int(row["session_no"])
-            pid   = row["patient_id"]
             direction      = row[f"{metric}_direction"]
             severity       = row.get(f"{metric}_severity")
             margin_used    = row.get(f"{metric}_margin_used")
@@ -346,23 +365,7 @@ def print_anomalies(
                 f"marj: %{margin_used} [{margin_source}])"
             )
             print(red_flash(line))
-            found.append({
-                "patient_id":     pid,
-                "patient_name":   f"{row['first_name']} {row['last_name']}",
-                "session_no":     sno,
-                "region":         row["region"],
-                "metric":         metric,
-                "value":          val,
-                "baseline_mean":  bm,
-                "baseline_std":   bs,
-                "z_score":        None if low_confidence else z,
-                "direction":      direction,
-                "low_confidence": low_confidence,
-                "severity":       severity,
-                "margin_used":    margin_used,
-                "margin_source":  margin_source,
-                "margin_excluded": margin_excluded,
-            })
+            found.append(anomaly_row_to_dict(row, metric))
 
     if not found:
         print(f"  {C.GREEN}✓ Hiç anomali bulunamadı.{C.RESET}")

@@ -158,7 +158,11 @@ def analyze_region_trend(
     )
 
     results: list[dict] = []
-    occipital_rows = pdf[pdf["region"] == "Occipital"]
+    # TV oranı, tek bir seansın hair_type'ından hesaplanamaz (bir seansta bölge
+    # başına tek bir sınıflandırma var); son `window_size` seansın penceresi
+    # kullanılır — hem yeterli veri sağlar hem de eski/stale seansların oranı
+    # sulandırmasını önler (tüm geçmiş yerine).
+    occipital_rows = pdf[pdf["region"] == "Occipital"].tail(window_size)
     occipital_tv = _terminal_vellus_ratio(occipital_rows) if not occipital_rows.empty else None
 
     for region, rgrp in pdf.groupby("region", sort=False):
@@ -209,7 +213,7 @@ def analyze_region_trend(
         region_latest = rgrp[rgrp["session_date"] == rgrp["session_date"].max()]
         observed_density = float(region_latest["hair_density_hairs_cm2"].mean())
         observed_thickness = float(region_latest["hair_thickness_um"].mean())
-        observed_tv = _terminal_vellus_ratio(rgrp)
+        observed_tv = _terminal_vellus_ratio(rgrp.tail(window_size))
         projected_tv = (
             project_tv_ratio(occipital_tv, region)
             if occipital_tv is not None
@@ -241,9 +245,14 @@ def analyze_region_trend(
         x = np.arange(n, dtype=float)
         lr = linregress(x, density)
         slope = float(lr.slope)
-        r_sq = float(lr.rvalue ** 2)
-        p_val = float(lr.pvalue)
-        is_sig = bool(p_val < 0.05)
+        # n==2 (df=0) veya sabit (varyanssız) density durumunda rvalue/pvalue
+        # NaN döner; None'a çevrilmezse FastAPI'nin JSON encoder'ı response'u
+        # serileştirirken ValueError atıp isteği 500'e düşürür.
+        r_sq_raw = float(lr.rvalue ** 2)
+        p_val_raw = float(lr.pvalue)
+        r_sq = None if np.isnan(r_sq_raw) else r_sq_raw
+        p_val = None if np.isnan(p_val_raw) else p_val_raw
+        is_sig = bool(p_val is not None and p_val < 0.05)
         fv = float(density[0])
         pred = float(lr.intercept + slope * n)
         s_pct = round((slope * n / fv) * 100, 2) if fv != 0 else None
@@ -252,11 +261,14 @@ def analyze_region_trend(
         # ise ayrıca direction fallback'i olarak da kullanılır)
         d_delta = round(float(density[-1]) - float(density[-2]), 2)
         prev_d = float(density[-2])
-        d_delta_pct = round(d_delta / prev_d * 100, 2) if prev_d != 0 else 0.0
+        # prev_d == 0 iken % değişim tanımsızdır (0.0 hardcode etmek 0'dan
+        # gerçek bir artışı "değişim yok" gibi gösterir) — None dönülür, aşağıdaki
+        # fallback yön kararı bu durumda ham farkın işaretine bakar.
+        d_delta_pct = round(d_delta / prev_d * 100, 2) if prev_d != 0 else None
 
         t_delta = round(float(thickness[-1]) - float(thickness[-2]), 2)
         prev_t = float(thickness[-2])
-        t_delta_pct = round(t_delta / prev_t * 100, 2) if prev_t != 0 else 0.0
+        t_delta_pct = round(t_delta / prev_t * 100, 2) if prev_t != 0 else None
 
         term_delta = round(float(is_terminal.iloc[-1]) - float(is_terminal.iloc[-2]), 2)
 
@@ -285,7 +297,15 @@ def analyze_region_trend(
             thickness_window_pct_change = thickness_window["window_pct_change"]
         else:
             # Pencere için yeterli veri yok — eski son-iki-seans delta mantığına fallback
-            if d_delta_pct > threshold_pct:
+            if d_delta_pct is None:
+                # önceki seans değeri 0'dı, % değişim tanımsız — ham farkın işaretine bak
+                if d_delta > 0:
+                    direction = "Increasing"
+                elif d_delta < 0:
+                    direction = "Decreasing"
+                else:
+                    direction = "Stable"
+            elif d_delta_pct > threshold_pct:
                 direction = "Increasing"
             elif d_delta_pct < -threshold_pct:
                 direction = "Decreasing"
@@ -325,8 +345,8 @@ def analyze_region_trend(
             "delta_terminal_pct": term_delta,
             "slope": round(slope, 4),
             "slope_pct": s_pct,
-            "r_squared": round(r_sq, 4),
-            "p_value": round(p_val, 6),
+            "r_squared": round(r_sq, 4) if r_sq is not None else None,
+            "p_value": round(p_val, 6) if p_val is not None else None,
             "is_significant": is_sig,
             "session_count": n,
             "predicted_next": round(pred, 2),
@@ -367,8 +387,11 @@ def analyze_patient_trend(
     row0 = pdf.iloc[0]
     name = f"{row0['first_name']} {row0['last_name']}"
 
+    # pdf zaten patient_id'ye göre filtrelenmiş — tekrar tam df'i geçirip
+    # analyze_region_trend'in aynı filtreyi bütün veri setinde tekrarlamasını
+    # (O(N) yerine O(N*hasta_sayısı)) önlemek için pdf kullanılır.
     regions = analyze_region_trend(
-        df, patient_id, threshold_pct, window_size, sigma_mult, fallback_pct, calibration_size, floor_pct
+        pdf, patient_id, threshold_pct, window_size, sigma_mult, fallback_pct, calibration_size, floor_pct
     )
 
     # Latest session aggregates (density, thickness, hair type distribution)
