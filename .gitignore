@@ -4,4 +4,6 @@ __pycache__/
 *.pyo
 .env
 *.csv
+!benchmark/scenarios/**/data.csv
 *.xlsx
+.coverage
