@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y time && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY api.py app.py scalp_analysis.py trend_analysis.py clinical_thresholds.py margin_utils.py ./
+COPY api.py app.py scalp_analysis.py trend_analysis.py clinical_thresholds.py margin_utils.py data_validation.py ./
+COPY benchmark/ ./benchmark/
 
 ENV SCALP_DATA_FILE=""
 

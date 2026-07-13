@@ -17,3 +17,10 @@ services:
       - ./data:/app/data
     environment:
       - PYTHONFAULTHANDLER=1
+
+  benchmark:
+    build: .
+    profiles: ["benchmark"]
+    command: python -m benchmark.run_benchmark
+    volumes:
+      - ./benchmark:/app/benchmark

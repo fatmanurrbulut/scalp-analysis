@@ -204,6 +204,12 @@ c3.caption(
 )
 c4.metric("Son Seans", last_date_str)
 
+st.caption(
+    "ℹ️ Outlier, tek bir ölçümün hastanın yakın geçmişine göre istatistiksel/pratik "
+    "olarak sıra dışı olduğunu gösterir — kalıcı bir klinik kötüleşme anlamına gelmez "
+    "ve aşağıdaki trend analiziyle birlikte değerlendirilmelidir."
+)
+
 st.divider()
 
 
@@ -458,6 +464,18 @@ else:
 
 st.divider()
 st.subheader("Anomali Detay Tablosu")
+st.caption(
+    "Bu bulgu tek bir ölçümün hastanın yakın geçmişine göre sıra dışı olduğunu "
+    "gösterir. Kalıcı klinik kötüleşme anlamına gelmez ve trend analiziyle "
+    "birlikte değerlendirilmelidir."
+)
+
+_DECISION_RULE_LABELS = {
+    "z_score_and_personal_margin":         "Z-skoru + kişisel marj",
+    "personal_margin_only_low_confidence": "Sadece pratik marj (düşük güven)",
+    "insufficient_data":                   "Yetersiz veri",
+    "no_change":                           "Değişim yok",
+}
 
 rows = []
 for metric, label in METRICS.items():
@@ -465,14 +483,18 @@ for metric, label in METRICS.items():
     if flag_col not in df.columns:
         continue
     for _, row in df[df[flag_col]].iterrows():
-        z             = row.get(f"{metric}_z", np.nan)
-        bm            = row.get(f"{metric}_baseline_mean", np.nan)
-        direction     = row.get(f"{metric}_direction")
-        severity      = row.get(f"{metric}_severity")
-        margin_used    = row.get(f"{metric}_margin_used")
-        margin_source  = row.get(f"{metric}_margin_source")
+        z               = row.get(f"{metric}_z", np.nan)
+        bm              = row.get(f"{metric}_baseline_mean", np.nan)
+        pct_deviation   = row.get(f"{metric}_pct_deviation", np.nan)
+        statistical_th  = row.get(f"{metric}_statistical_threshold", np.nan)
+        practical_th    = row.get(f"{metric}_practical_threshold", np.nan)
+        decision_rule   = row.get(f"{metric}_decision_rule")
+        calibration_n   = row.get(f"{metric}_calibration_points_used")
+        direction       = row.get(f"{metric}_direction")
+        severity        = row.get(f"{metric}_severity")
+        margin_source   = row.get(f"{metric}_margin_source")
         margin_excluded = row.get(f"{metric}_margin_excluded")
-        val           = float(row[metric])
+        val             = float(row[metric])
         rows.append({
             "Hasta":         f"{row['first_name']} {row['last_name']}",
             "Bölge":         row["region"],
@@ -480,10 +502,15 @@ for metric, label in METRICS.items():
             "Metrik":        label,
             "Değer":         val,
             "Baseline Mean": round(float(bm), 2) if pd.notna(bm) else "—",
-            "Z-score":       round(float(z),  2) if pd.notna(z)  else "—",
+            "Z-Score":       round(float(z), 2) if pd.notna(z) else "—",
+            "Yüzde Sapma":   round(float(pct_deviation), 2) if pd.notna(pct_deviation) else "—",
+            "İstatistiksel Eşik": round(float(statistical_th), 2) if pd.notna(statistical_th) else "—",
+            "Pratik Marj %": round(float(practical_th), 2) if pd.notna(practical_th) else "—",
             "Yön":           "↑ Yüksek" if direction == "high" else "↓ Düşük",
             "Severity":      severity.upper() if severity else "—",
-            "Marj %":        margin_used,
+            "Karar Kuralı":  _DECISION_RULE_LABELS.get(decision_rule, decision_rule or "—"),
+            "Güven Seviyesi": "Düşük" if pd.isna(z) else "Yüksek",
+            "Kalibrasyon Noktası": int(calibration_n) if pd.notna(calibration_n) else "—",
             "Marj Kaynağı":  margin_source,
             "Kalibrasyon Dışlanan": margin_excluded,
         })

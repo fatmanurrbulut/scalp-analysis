@@ -24,6 +24,21 @@ pip install -r requirements.txt
 SCALP_DATA_FILE=mock_patient_session_analysis_biological.csv uvicorn api:app --reload --port 8000
 ```
 
+### Geliştirme ve Test
+
+```bash
+pip install -r requirements-dev.txt
+pytest -v
+pytest --cov=. --cov-report=term-missing
+python -m benchmark.run_benchmark
+```
+
+Docker ile benchmark (opsiyonel profil):
+
+```bash
+docker compose --profile benchmark run --rm benchmark
+```
+
 ## API Dokümantasyonu
 
 Servis çalışırken: http://localhost:8000/docs
@@ -166,16 +181,72 @@ sayılır. İlk seans (baseline yok) hâlâ hiç kontrol edilmez.
 |-------|----------|
 | `baseline_mean`, `baseline_std` | Pencere istatistikleri |
 | `z_score` | Hesaplanan z-score |
+| `pct_deviation` | Hesaplanan yüzde sapma (`\|değer - baseline_mean\| / baseline_mean × 100`) |
 | `direction` | `high` / `low` / `insufficient_data` |
 | `severity` | `heavy` / `medium` / `light` — yalnızca anomali=true satırlarda |
+| `statistical_threshold` | Kullanılan z-score eşiği (= `threshold` parametresi) |
+| `practical_threshold` | Kullanılan pratik % marj (`margin_used` ile aynı değer, daha açık isimle) |
+| `decision_rule` | Karar hangi mantıkla verildi — bkz. [Anomali Karar Mantığı](#anomali-karar-mantığı-anomaly-decision-logic) |
 | `margin_used` | Bu satır için kullanılan pratik % marj |
 | `margin_source` | `personal_calibration` / `aga_reference_fallback` / `contaminated_fallback` / `fixed` |
 | `margin_excluded` | Kontaminasyon koruması nedeniyle kalibrasyondan dışlanan nokta sayısı |
+| `calibration_points_used` | Marj hesabına giren TEMİZ kalibrasyon seansı sayısı |
+| `algorithm_version` | Algoritmanın sürüm etiketi (şu an: `rolling-zscore-v1`) — sadece API/CLI JSON çıktısında |
 
 **Analiz edilen metrikler:**
 
 - `hair_density_hairs_cm2` — Saç yoğunluğu (hair/cm²)
 - `hair_thickness_um` — Saç kalınlığı (µm)
+
+---
+
+### Anomali Karar Mantığı (Anomaly Decision Logic)
+
+Karar mantığı Bölüm 1'de anlatılanın ötesine geçmez — `decision_rule` alanı
+sadece o kararın **hangi yoldan** verildiğini açıkça etiketler:
+
+| `decision_rule` | Ne zaman | Ne anlama gelir |
+|---|---|---|
+| `z_score_and_personal_margin` | Pencerede ≥2 nokta var VE std>0 | Hem `\|z\| > threshold` HEM `pct_deviation > marj` birlikte arandı — standart, yüksek güvenli karar |
+| `personal_margin_only_low_confidence` | Pencerede tek nokta var (genelde 2. seans) VEYA pencere std=0 ama değer farklı | z-score hesaplanamadı (tanımsız), karar SADECE pratik % marja göre verildi — düşük veri güveni |
+| `insufficient_data` | Grubun toplam seans sayısı `window`'dan az, VEYA bu satır o bölgenin ilk seansı | Baseline hiç yok, hiçbir karar verilmedi |
+| `no_change` | Pencere std=0 VE mevcut değer de pencereyle birebir aynı | z=0 kesin (belirsizlik yok), değişim yok |
+
+Bu alan mevcut karar mantığını **değiştirmez**, sadece şeffaflaştırır — aynı
+`\|z\| > threshold` VE `pct_deviation > marj` kuralı hâlâ geçerlidir.
+
+---
+
+## Veri Doğrulama (Data Validation)
+
+Tüm CSV/JSON girdileri `data_validation.py::validate_and_prepare(df,
+require_bio=False)` üzerinden geçer (API'de `/analyze*` endpoint'leri
+`require_bio=False`, `/trend*` endpoint'leri `require_bio=True` kullanır —
+ikincisi ayrıca `hair_type` sütununu zorunlu kılar).
+
+Kontrol edilenler:
+
+| Sorun tipi (`type`) | Açıklama |
+|---|---|
+| `missing_columns` | Zorunlu sütunlardan biri veya birden fazlası eksik |
+| `missing_value` | `patient_id` / `first_name` / `last_name` / `region` boş |
+| `invalid_date` | `session_date` ayrıştırılamıyor (`pd.to_datetime(errors="coerce")` sonucu `NaT`) |
+| `invalid_numeric` | `hair_density_hairs_cm2` / `hair_thickness_um` sayısal değil, `NaN` veya `inf`/`-inf` |
+| `negative_value` | Yoğunluk veya kalınlık negatif |
+| `invalid_hair_type` | `hair_type`, `Terminal` / `Intermediate` / `Vellus` dışında bir değer (yalnızca `require_bio=True` iken kontrol edilir) |
+| `duplicate_measurement` | Aynı `patient_id + session_date + region` kombinasyonunda birden fazla kayıt |
+
+Herhangi bir sorun bulunursa `DataValidationError` (bir `ValueError` alt
+sınıfı) fırlatılır; `.issues` özniteliği yukarıdaki şekilde yapılandırılmış bir
+liste döner (`{"type": ..., "column": ..., "row_indices": [...]}`). API
+katmanında bu doğrudan **HTTP 422** `{"detail": {"issues": [...]}}` yanıtına
+çevrilir.
+
+Doğrulama başarılı olursa aynı fonksiyon veriyi hazırlar da: tarihleri
+dönüştürür, `session_no`'yu hasta bazında hesaplar, `patient_id, region,
+session_no` sırasına göre sıralar (bkz. `margin_utils.py::prepare_session_df`
+— bu adım `api.py`, `app.py` ve `scalp_analysis.py` arasında tek noktada
+paylaşılır).
 
 ---
 
@@ -275,3 +346,108 @@ Minimum `2` seans olmadan delta/regresyon hiç hesaplanmaz; `direction` varsayı
 - Tüm hastaların özeti toplanır.
 - Bölge bazında ortalama `delta_density_pct` hesaplanarak en iyi ve en kötü bölgeler belirlenir.
 - Genel klinik istatistikleri döndürülür: ortalama yoğunluk, kalınlık, saç tipi dağılımı.
+
+---
+
+## Testleri Çalıştırma
+
+```bash
+pip install -r requirements-dev.txt
+
+pytest -v                                    # tüm testler
+pytest --cov=. --cov-report=term-missing     # coverage raporuyla
+pytest tests/test_anomaly_detection.py -v    # tek dosya
+```
+
+Test paketi (`tests/`): `test_data_validation.py`, `test_margin_utils.py`,
+`test_anomaly_detection.py`, `test_trend_analysis.py`, `test_api_analyze.py`,
+`test_api_trend.py`, `test_benchmark.py`. FastAPI endpoint testleri
+`fastapi.testclient.TestClient` (`httpx` üzerinden) kullanır.
+
+---
+
+## ScalpBench
+
+`benchmark/` altında, mevcut `detect_anomalies()`, `analyze_patient_trend()` /
+`analyze_clinic_trend()` ve `validate_and_prepare()` fonksiyonlarını sabit
+sentetik senaryolar üzerinde çalıştırıp sonucu `expected.json` ile
+karşılaştıran bir **regresyon** benchmark'ı bulunur. Bağımsız bir anomali
+algoritması İÇERMEZ — sadece "algoritma dün ne yapıyorduysa bugün de aynısını
+yapıyor mu" sorusuna cevap verir.
+
+```text
+benchmark/
+├── run_benchmark.py     — senaryoları keşfeder, çalıştırır, benchmark_report.json yazar
+├── grader.py             — precision/recall/f1/fpr ve region/metric/direction/trend/validation doğruluğu
+├── schemas.py            — config.json / expected.json şema doğrulaması
+└── scenarios/
+    ├── stable_patient/                          — küçük doğal dalgalanma, hiçbir sinyal beklenmez (combined)
+    ├── sudden_density_drop/                     — ani yoğunluk düşüşü doğru seans/yön ile yakalanmalı
+    ├── sudden_thickness_change/                 — ani kalınlık artışı doğru yakalanmalı
+    ├── contaminated_calibration/                 — kalibrasyondaki tek seferlik sıçrama dışlanmalı
+    ├── insufficient_history/                     — n < window iken hiç anomali üretilmemeli
+    ├── second_session_single_point_baseline/     — 2. seansta tek-nokta-baseline düşük güvenle yakalanmalı
+    ├── gradual_improvement/, gradual_deterioration/  — pencere bazlı trend yönü doğru hesaplanmalı
+    └── invalid_negative_value/, invalid_date/, duplicate_measurement/  — veri doğrulama hataları doğru raporlanmalı
+```
+
+### Benchmark'ı Çalıştırma
+
+```bash
+python -m benchmark.run_benchmark
+```
+
+Docker ile:
+
+```bash
+docker compose --profile benchmark run --rm benchmark
+```
+
+Çıktı `benchmark/benchmark_report.json`'a yazılır ve konsola özet basılır;
+herhangi bir senaryo başarısız olursa çıkış kodu `1` döner (CI'da kullanılabilir).
+
+### Benchmark Metriklerini Yorumlama
+
+Anomali eşleştirmesi tam **5'li anahtarla** yapılır: `patient_id, session_no,
+region, metric, direction`. Bu tam eşleşme `true_positive` / `false_positive`
+/ `false_negative` sayımını belirler; `precision`, `recall`, `f1_score` ve
+`false_positive_rate` (payda: `false_positive + true_negative`, burada
+true_negative = değerlendirilen tüm satırlar − tp − fp − fn) bunlardan
+hesaplanır.
+
+`region_accuracy` / `metric_accuracy` / `direction_accuracy` daha kaba, **huni
+şeklinde** bir ikinci katman sağlar — "bu hastanın bu seansında BİR ŞEY
+işaretlendi mi" (event eşleşmesi: yalnız `patient_id + session_no`) sorusuna
+evet alan çiftler arasında, sırasıyla:
+
+1. `region_accuracy`: bölge de doğru mu?
+2. `metric_accuracy`: (bölge doğruyken) metrik de doğru mu?
+3. `direction_accuracy`: (bölge + metrik doğruyken) yön de doğru mu?
+
+Her katman bir öncekine koşulludur — böylece "yanlış bölgedeki doğru metrik"
+gibi anlamsız bir eşleşme sayılmaz. `trend_accuracy` ve
+`validation_error_accuracy` ise sırasıyla beklenen trend yönlerinin ve
+beklenen doğrulama hatası tiplerinin (`type`+`column`) ne kadarının doğru
+üretildiğini gösterir.
+
+**Bu metrikler klinik doğrulama DEĞİLDİR** — bkz. aşağıdaki bölüm.
+
+---
+
+## Klinik Doğrulama Sınırları
+
+- ScalpBench'teki senaryolar **elle tasarlanmış sentetik veridir**, gerçek
+  hasta popülasyonundan veya klinik çalışmadan gelmez. "Precision/recall = 1.0"
+  yalnızca algoritmanın bu belirli sentetik senaryolarda tutarlı davrandığı
+  anlamına gelir — gerçek dünya klinik doğruluğunu ölçmez.
+- `decision_rule`, `pct_deviation`, `statistical_threshold`,
+  `practical_threshold` gibi alanlar mevcut istatistiksel karar mantığını
+  **açıklar**, yeni bir klinik iddia getirmez.
+- Kişisel kalibrasyon marjı, AGA fallback marjı ve kontaminasyon eşikleri
+  (`CONTAMINATION_THRESHOLD`, `CONTAMINATION_MIN_PCT`) mühendislik
+  tercihleriyle belirlenmiş sabitlerdir — resmi bir klinik validasyon
+  sürecinden geçmemiştir.
+- Bu servis "anomali" veya "trend" tespiti yapar; **tanı koymaz**. Sonuçlar
+  her zaman bir klinisyen değerlendirmesiyle birlikte yorumlanmalıdır.
+- Yeni bir istatistiksel eşik veya karar kuralı gerçek hasta verisiyle
+  doğrulanmadan üretime alınmamalıdır.
