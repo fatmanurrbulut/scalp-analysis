@@ -7,7 +7,6 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN, get_all_thresholds
-from cusum_analysis import H_MULT_DEFAULT, K_MULT_DEFAULT, compute_cusum_all
 from scalp_analysis import ANOMALY_WINDOW, detect_anomalies
 from trend_analysis import analyze_patient_trend
 
@@ -79,22 +78,6 @@ def _analyze(
         use_personal_calibration=True,
         calibration_size=calibration_size, floor_pct=floor_pct, fallback_pct=fallback_pct,
     )
-
-
-@st.cache_data(show_spinner=False)
-def _cusum(
-    df: pd.DataFrame,
-    pid: str,
-    calibration_size: int,
-) -> dict[str, pd.DataFrame]:
-    """[TASLAK/DENEYSEL] — henüz klinik olarak doğrulanmadı, sadece bilgi amaçlı."""
-    pat = df[df["patient_id"] == pid].copy()
-    if pat.empty:
-        return {}
-    return {
-        metric: compute_cusum_all(pat, metric, calibration_size, K_MULT_DEFAULT, H_MULT_DEFAULT)
-        for metric in METRICS
-    }
 
 
 @st.cache_data(show_spinner=False)
@@ -467,50 +450,6 @@ else:
                 use_container_width=True,
                 hide_index=True,
             )
-
-
-# ── CUSUM Kayma Tespiti ─────────────────────────────────────────────────────────
-
-st.divider()
-st.subheader("🧪 CUSUM Kayma Tespiti")
-st.caption(
-    "`/analyze` ve `/trend`'in aksine sapmaları 1. seanstan itibaren biriktirir "
-    "— çok yavaş/küçük driftleri teorik olarak erken yakalayabilir."
-)
-
-cusum_results = _cusum(df_raw, selected_pid, calibration_size)
-
-any_alarm = False
-for metric, label in METRICS.items():
-    cusum_df = cusum_results.get(metric)
-    if cusum_df is None or cusum_df.empty:
-        continue
-
-    st.markdown(f"**{label}**")
-    alarms = cusum_df[cusum_df["alarm"]]
-    if alarms.empty:
-        st.caption("Alarm yok.")
-        continue
-
-    any_alarm = True
-    alarm_disp = alarms.copy()
-    alarm_disp["Yön"] = alarm_disp["direction"].map({"high": "↑ Yüksek", "low": "↓ Düşük"})
-    st.dataframe(
-        alarm_disp[["region", "session_no", "value", "s_pos", "s_neg", "Yön"]].rename(
-            columns={
-                "region":     "Bölge",
-                "session_no": "Seans",
-                "value":      "Değer",
-                "s_pos":      "S+",
-                "s_neg":      "S-",
-            }
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-if not any_alarm:
-    st.caption("Hiçbir bölge/metrikte CUSUM alarmı tetiklenmedi.")
 
 
 # ── Anomali detay tablosu ───────────────────────────────────────────────────────

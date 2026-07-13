@@ -260,50 +260,7 @@ Minimum `2` seans olmadan delta/regresyon hiç hesaplanmaz; `direction` varsayı
 
 ---
 
-### 3. CUSUM (Cumulative Sum) — TASLAK
-
-> **[TASLAK]** Bu katman henüz klinik olarak doğrulanmadı, dashboard'a
-> (`app.py`) bağlı değil. Yalnızca `POST /cusum` üzerinden erişilebilir.
-
-Her **hasta × bölge × metrik** kombinasyonu için iki taraflı (tabular) CUSUM
-hesaplanır (kaynak: E. S. Page, 1954; Chang & McLean, 2006):
-
-```
-S+_t = max(0, S+_{t-1} + (x_t - mu0 - k))   # yukarı yönlü kayma
-S-_t = max(0, S-_{t-1} + (mu0 - x_t - k))   # aşağı yönlü kayma
-
-alarm: S+_t > h  veya  S-_t > h
-k = k_mult * std
-h = h_mult * std
-```
-
-`mu0`/`std`, `margin_utils.py`'deki kişisel kalibrasyon mantığıyla AYNI
-şekilde ilk `calibration_size` seanstan hesaplanır. `std=0` veya `NaN`
-çıkarsa, `clinical_thresholds.FALLBACK_MIN_PCT_MARGIN` üzerinden bir
-std-eşdeğeri türetilir (`mu0 * FALLBACK_MIN_PCT_MARGIN / 100`).
-
-**Parametreler:**
-
-| Parametre | Varsayılan | Açıklama |
-|-----------|-----------|----------|
-| `calibration_size` | `6` | `mu0`/`std` için kullanılan ilk seans sayısı |
-| `k_mult` | `0.5` | Referans kayma çarpanı (`k = k_mult * std`) |
-| `h_mult` | `5.0` | Karar sınırı çarpanı (`h = h_mult * std`) |
-
-**Örnek kullanım:**
-
-```bash
-curl -X POST "http://localhost:8000/cusum?calibration_size=6&k_mult=0.5&h_mult=5.0" \
-     -F "file=@data/mock_patient_session_analysis_biological.csv"
-```
-
-Bu katman `/trend`'in (pencere sınırlı) aksine sapmaları başlangıçtan
-itibaren biriktirir, bu yüzden çok yavaş/küçük driftleri teorik olarak
-yakalayabilir — ama henüz backtest edilmedi, dashboard'a bağlı değil.
-
----
-
-### 4. Hasta & Klinik Özeti
+### 3. Hasta & Klinik Özeti
 
 **Hasta bazlı özet (`analyze_patient_trend`):**
 
