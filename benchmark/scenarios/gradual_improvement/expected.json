@@ -1,0 +1,7 @@
+{
+  "expected_anomalies": [],
+  "expected_trends": [
+    {"patient_id": "P-IMPROVE-01", "region": "Vertex", "direction": "Increasing"}
+  ],
+  "expected_validation_errors": []
+}

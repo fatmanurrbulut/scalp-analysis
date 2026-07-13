@@ -1,0 +1,14 @@
+{
+  "scenario_id": "stable_patient",
+  "description": "Tek hasta, tek bölge, 10 seans boyunca küçük doğal dalgalanma (±1-2%) — hiçbir anomali veya trend sinyali beklenmez.",
+  "analysis_type": "combined",
+  "parameters": {
+    "window": 3,
+    "threshold": 2.0,
+    "use_personal_calibration": true,
+    "calibration_size": 6,
+    "floor_pct": 3.0,
+    "window_size": 3,
+    "sigma_mult": 2.0
+  }
+}

@@ -1,0 +1,6 @@
+patient_id,first_name,last_name,session_date,region,hair_density_hairs_cm2,hair_thickness_um,hair_type
+P-2NDSESSION-01,Test,P-2NDSESSION-01,2026-01-01,Vertex,100,50,Terminal
+P-2NDSESSION-01,Test,P-2NDSESSION-01,2026-01-15,Vertex,200,50,Terminal
+P-2NDSESSION-01,Test,P-2NDSESSION-01,2026-01-29,Vertex,201,50,Terminal
+P-2NDSESSION-01,Test,P-2NDSESSION-01,2026-02-12,Vertex,199,50,Terminal
+P-2NDSESSION-01,Test,P-2NDSESSION-01,2026-02-26,Vertex,200,50,Terminal

@@ -52,6 +52,7 @@ from margin_utils import compute_personal_margin, prepare_session_df
 ANOMALY_WINDOW         = 3     # rolling baseline penceresi (son N seans, mevcut haric)
 ANOMALY_THRESHOLD      = 2.0   # +/- std esigi
 ANOMALY_MIN_PCT_MARGIN = FALLBACK_MIN_PCT_MARGIN
+ALGORITHM_VERSION      = "rolling-zscore-v1"
 # Bu, SADECE use_personal_calibration=False (sabit marj) modunda kullanilan
 # deger; varsayilan modda (True) her hasta/bolge kendi kisisel kalibrasyonunu
 # kullanir, bu sabit sadece yeterli kisisel veri yokken gecici fallback'tir.
@@ -189,6 +190,19 @@ def detect_anomalies(
         direction: "high" / "low" / "insufficient_data" / None
         severity:  "heavy" / "medium" / "light" / None (is_anomaly=False ise None)
         margin_source: "personal_calibration" / "aga_reference_fallback" / "fixed"
+
+    Ayrıca kararın NASIL verildiğini açıklayan alanlar eklenir:
+        {metric}_pct_deviation:            hesaplanan yüzde sapma (baseline yoksa NaN)
+        {metric}_statistical_threshold:     kullanılan z-score eşiği (= threshold)
+        {metric}_practical_threshold:       kullanılan pratik % marj (= margin_used ile aynı değer)
+        {metric}_calibration_points_used:   kişisel kalibrasyona giren TEMİZ nokta sayısı (fixed modda 0)
+        {metric}_decision_rule:
+            "z_score_and_personal_margin"        — hem |z|>threshold hem pct_deviation>marj birlikte arandı
+            "personal_margin_only_low_confidence" — std=0 (farklı değer) VEYA tek-nokta-baseline (2. seans);
+                                                     z hesaplanamadı, sadece pratik % marjla karar verildi
+            "insufficient_data"                   — grup toplamı window'dan az, VEYA bu satır ilk seans
+                                                     (baseline hiç yok, hiç değerlendirilmedi)
+            "no_change"                            — pencere std=0 ve mevcut değer de aynı, z=0.0 kesin
     """
     result_frames = []
 
@@ -197,29 +211,36 @@ def detect_anomalies(
         n   = len(grp)
 
         for metric in METRICS:
-            vals       = grp[metric].values.astype(float)
-            means      = np.full(n, np.nan)
-            stds       = np.full(n, np.nan)
-            zs         = np.full(n, np.nan)
-            anomalies  = np.zeros(n, dtype=bool)
-            directions = np.full(n, None, dtype=object)
-            severities = np.full(n, None, dtype=object)
+            vals            = grp[metric].values.astype(float)
+            means           = np.full(n, np.nan)
+            stds            = np.full(n, np.nan)
+            zs              = np.full(n, np.nan)
+            pct_deviations  = np.full(n, np.nan)
+            anomalies       = np.zeros(n, dtype=bool)
+            directions      = np.full(n, None, dtype=object)
+            severities      = np.full(n, None, dtype=object)
+            decision_rules  = np.full(n, None, dtype=object)
 
             if use_personal_calibration:
-                margin_info    = compute_personal_margin(
+                margin_info          = compute_personal_margin(
                     grp, metric, calibration_size, fallback_pct, floor_pct,
                 )
-                metric_margin       = margin_info["min_pct_margin"]
-                margin_source       = margin_info["source"]
-                margin_excluded     = margin_info["calibration_points_excluded"]
+                metric_margin        = margin_info["min_pct_margin"]
+                margin_source        = margin_info["source"]
+                margin_excluded      = margin_info["calibration_points_excluded"]
+                calibration_used     = margin_info["n_calibration_points"]
             else:
-                metric_margin   = min_pct_margin
-                margin_source   = "fixed"
-                margin_excluded = 0
+                metric_margin    = min_pct_margin
+                margin_source    = "fixed"
+                margin_excluded  = 0
+                calibration_used = 0
 
             if n < window:
-                directions[:] = "insufficient_data"
+                directions[:]     = "insufficient_data"
+                decision_rules[:] = "insufficient_data"
             else:
+                # İlk seans hiçbir zaman değerlendirilmez (baseline yok)
+                decision_rules[0] = "insufficient_data"
                 for i in range(1, n):
                     # sabit boyutlu pencere: son `window` seans, mevcut haric
                     window_vals = vals[max(0, i - window):i]
@@ -230,6 +251,8 @@ def detect_anomalies(
                             m = window_vals.mean()
                             means[i] = round(m, 2)
                             pct_deviation = abs(vals[i] - m) / m * 100 if m != 0 else 0
+                            pct_deviations[i] = round(pct_deviation, 2)
+                            decision_rules[i] = "personal_margin_only_low_confidence"
                             if pct_deviation > metric_margin:
                                 anomalies[i]  = True
                                 directions[i] = "high" if vals[i] > m else "low"
@@ -240,9 +263,11 @@ def detect_anomalies(
                     means[i] = round(m, 2)
                     stds[i]  = round(s, 2)
                     pct_deviation = abs(vals[i] - m) / m * 100 if m != 0 else 0
+                    pct_deviations[i] = round(pct_deviation, 2)
                     if s > 0:
                         z = (vals[i] - m) / s
                         zs[i] = round(z, 3)
+                        decision_rules[i] = "z_score_and_personal_margin"
                         is_anomaly_final = (abs(z) > threshold) and (pct_deviation > metric_margin)
                         if is_anomaly_final:
                             anomalies[i]  = True
@@ -257,23 +282,31 @@ def detect_anomalies(
                     elif vals[i] == m:
                         # pencere birebir ayni (std=0) ve deger de ayni -> degisim yok
                         zs[i] = 0.0
+                        pct_deviations[i] = 0.0
+                        decision_rules[i] = "no_change"
                     else:
                         # pencere birebir ayni (std=0) ama deger farkli ->
                         # z-score tanimsiz; yine de pratik marj sarti araniyor
+                        decision_rules[i] = "personal_margin_only_low_confidence"
                         if pct_deviation > metric_margin:
                             anomalies[i]  = True
                             directions[i] = "high" if vals[i] > m else "low"
                             severities[i] = "heavy"
 
-            grp[f"{metric}_margin_used"]     = metric_margin
-            grp[f"{metric}_margin_source"]   = margin_source
-            grp[f"{metric}_margin_excluded"] = margin_excluded
+            grp[f"{metric}_margin_used"]              = metric_margin
+            grp[f"{metric}_margin_source"]            = margin_source
+            grp[f"{metric}_margin_excluded"]          = margin_excluded
+            grp[f"{metric}_calibration_points_used"]  = calibration_used
             grp[f"{metric}_baseline_mean"] = means
             grp[f"{metric}_baseline_std"]  = stds
             grp[f"{metric}_z"]             = zs
+            grp[f"{metric}_pct_deviation"] = pct_deviations
             grp[f"{metric}_is_anomaly"]    = anomalies
             grp[f"{metric}_direction"]     = directions
             grp[f"{metric}_severity"]      = severities
+            grp[f"{metric}_decision_rule"] = decision_rules
+            grp[f"{metric}_statistical_threshold"] = threshold
+            grp[f"{metric}_practical_threshold"]   = metric_margin
 
         result_frames.append(grp)
 
@@ -286,8 +319,10 @@ def anomaly_row_to_dict(row: pd.Series, metric: str) -> dict:
     """Bir anomali satırından rapor/API için ortak alan setini üretir (CLI JSON raporu ve FastAPI /analyze aynı şekli kullanır)."""
     z = row[f"{metric}_z"]
     z_score = None if pd.isna(z) else float(z)
+    pct_deviation = row.get(f"{metric}_pct_deviation")
     margin_used = row.get(f"{metric}_margin_used")
     margin_excluded = row.get(f"{metric}_margin_excluded")
+    calibration_used = row.get(f"{metric}_calibration_points_used")
     return {
         "patient_id":     row["patient_id"],
         "patient_name":   f"{row['first_name']} {row['last_name']}",
@@ -298,12 +333,19 @@ def anomaly_row_to_dict(row: pd.Series, metric: str) -> dict:
         "baseline_mean":  float(row[f"{metric}_baseline_mean"]),
         "baseline_std":   float(row[f"{metric}_baseline_std"]),
         "z_score":        z_score,
+        "pct_deviation":  None if pd.isna(pct_deviation) else float(pct_deviation),
         "direction":      row[f"{metric}_direction"],
         "low_confidence": z_score is None,
         "severity":       row.get(f"{metric}_severity"),
+        "statistical_threshold": float(row[f"{metric}_statistical_threshold"]),
+        "practical_threshold":   float(row[f"{metric}_practical_threshold"]),
+        "decision_rule":  row.get(f"{metric}_decision_rule"),
         "margin_used":    float(margin_used) if margin_used is not None else None,
         "margin_source":  row.get(f"{metric}_margin_source"),
         "margin_excluded": int(margin_excluded) if margin_excluded is not None else None,
+        "calibration_points_used": None if calibration_used is None else int(calibration_used),
+        "calibration_points_excluded": int(margin_excluded) if margin_excluded is not None else None,
+        "algorithm_version": ALGORITHM_VERSION,
     }
 
 

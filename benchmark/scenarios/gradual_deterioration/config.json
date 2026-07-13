@@ -1,0 +1,11 @@
+{
+  "scenario_id": "gradual_deterioration",
+  "description": "8 seans boyunca yoğunlukta düzenli, kademeli düşüş (110 -> 80) — pencere bazlı trend yönü Decreasing olmalı.",
+  "analysis_type": "trend",
+  "parameters": {
+    "window_size": 3,
+    "sigma_mult": 2.0,
+    "calibration_size": 6,
+    "floor_pct": 3.0
+  }
+}

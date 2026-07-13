@@ -1,0 +1,7 @@
+{
+  "expected_anomalies": [
+    {"patient_id": "P-DROP-01", "session_no": 7, "region": "Vertex", "metric": "hair_density_hairs_cm2", "direction": "low"}
+  ],
+  "expected_trends": [],
+  "expected_validation_errors": []
+}

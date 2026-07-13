@@ -1,0 +1,8 @@
+{
+  "expected_anomalies": [
+    {"patient_id": "P-CONTAM-01", "session_no": 5, "region": "Vertex", "metric": "hair_density_hairs_cm2", "direction": "high"},
+    {"patient_id": "P-CONTAM-01", "session_no": 9, "region": "Vertex", "metric": "hair_density_hairs_cm2", "direction": "high"}
+  ],
+  "expected_trends": [],
+  "expected_validation_errors": []
+}

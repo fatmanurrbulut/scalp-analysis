@@ -1,0 +1,6 @@
+{
+  "scenario_id": "invalid_negative_value",
+  "description": "Negatif hair_density_hairs_cm2 değeri içeren tek satırlık veri — validate_and_prepare açıkça reddetmeli.",
+  "analysis_type": "validation",
+  "parameters": {}
+}

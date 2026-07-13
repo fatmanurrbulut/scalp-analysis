@@ -1,0 +1,7 @@
+{
+  "expected_anomalies": [],
+  "expected_trends": [
+    {"patient_id": "P-STABLE-01", "region": "Vertex", "direction": "Stable"}
+  ],
+  "expected_validation_errors": []
+}

@@ -1,0 +1,12 @@
+{
+  "scenario_id": "insufficient_history",
+  "description": "Sadece 2 seans (window=3'ten az) — büyük bir değer sıçraması (100 -> 200) olsa bile hiçbir anomali hesaplanmamalı, tüm satırlar insufficient_data dönmeli.",
+  "analysis_type": "anomaly",
+  "parameters": {
+    "window": 3,
+    "threshold": 2.0,
+    "use_personal_calibration": true,
+    "calibration_size": 6,
+    "floor_pct": 3.0
+  }
+}

@@ -1,0 +1,9 @@
+patient_id,first_name,last_name,session_date,region,hair_density_hairs_cm2,hair_thickness_um,hair_type
+P-DETERIORATE-01,Test,P-DETERIORATE-01,2026-01-01,Vertex,110,56,Terminal
+P-DETERIORATE-01,Test,P-DETERIORATE-01,2026-01-15,Vertex,105,55,Terminal
+P-DETERIORATE-01,Test,P-DETERIORATE-01,2026-01-29,Vertex,100,54,Terminal
+P-DETERIORATE-01,Test,P-DETERIORATE-01,2026-02-12,Vertex,95,53,Terminal
+P-DETERIORATE-01,Test,P-DETERIORATE-01,2026-02-26,Vertex,90,52,Terminal
+P-DETERIORATE-01,Test,P-DETERIORATE-01,2026-03-12,Vertex,84,51,Terminal
+P-DETERIORATE-01,Test,P-DETERIORATE-01,2026-03-26,Vertex,82,50,Terminal
+P-DETERIORATE-01,Test,P-DETERIORATE-01,2026-04-09,Vertex,80,50,Terminal

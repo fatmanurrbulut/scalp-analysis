@@ -1,0 +1,12 @@
+{
+  "scenario_id": "contaminated_calibration",
+  "description": "Kalibrasyon setinin (ilk 6 seans) 5. noktasında tek seferlik büyük bir sıçrama (100 -> 150) var. Kontaminasyon koruması bu noktayı kalibrasyondan dışlamalı; aksi halde şişen marj, 9. seanstaki gerçek %12'lik artışı maskeleyebilirdi.",
+  "analysis_type": "anomaly",
+  "parameters": {
+    "window": 3,
+    "threshold": 2.0,
+    "use_personal_calibration": true,
+    "calibration_size": 6,
+    "floor_pct": 3.0
+  }
+}

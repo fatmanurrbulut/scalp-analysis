@@ -1,0 +1,6 @@
+{
+  "scenario_id": "duplicate_measurement",
+  "description": "Aynı patient_id + session_date + region kombinasyonunda iki kayıt — validate_and_prepare açıkça reddetmeli.",
+  "analysis_type": "validation",
+  "parameters": {}
+}

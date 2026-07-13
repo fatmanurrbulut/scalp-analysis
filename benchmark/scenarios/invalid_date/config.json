@@ -1,0 +1,6 @@
+{
+  "scenario_id": "invalid_date",
+  "description": "Ayrıştırılamayan session_date değeri içeren tek satırlık veri — validate_and_prepare açıkça reddetmeli.",
+  "analysis_type": "validation",
+  "parameters": {}
+}

@@ -1,0 +1,3 @@
+patient_id,first_name,last_name,session_date,region,hair_density_hairs_cm2,hair_thickness_um,hair_type
+P-INSUFF-01,Test,P-INSUFF-01,2026-01-01,Vertex,100,50,Terminal
+P-INSUFF-01,Test,P-INSUFF-01,2026-01-15,Vertex,200,50,Terminal

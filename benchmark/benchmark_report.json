@@ -1,0 +1,607 @@
+{
+  "generated_at": "2026-07-13T09:07:06.842189+00:00",
+  "algorithm_version": "rolling-zscore-v1",
+  "summary": {
+    "scenario_count": 11,
+    "passed_count": 11,
+    "failed_count": 0,
+    "true_positive": 5,
+    "false_positive": 0,
+    "false_negative": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1_score": 1.0,
+    "false_positive_rate": 0.0,
+    "region_accuracy": 1.0,
+    "metric_accuracy": 1.0,
+    "direction_accuracy": 1.0,
+    "trend_accuracy": 1.0,
+    "validation_error_accuracy": 1.0
+  },
+  "scenarios": [
+    {
+      "scenario_id": "contaminated_calibration",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [
+          {
+            "patient_id": "P-CONTAM-01",
+            "session_no": 5,
+            "region": "Vertex",
+            "metric": "hair_density_hairs_cm2",
+            "direction": "high"
+          },
+          {
+            "patient_id": "P-CONTAM-01",
+            "session_no": 9,
+            "region": "Vertex",
+            "metric": "hair_density_hairs_cm2",
+            "direction": "high"
+          }
+        ],
+        "expected_trends": [],
+        "expected_validation_errors": []
+      },
+      "actual": {
+        "anomalies": [
+          {
+            "patient_id": "P-CONTAM-01",
+            "session_no": 5,
+            "region": "Vertex",
+            "metric": "hair_density_hairs_cm2",
+            "direction": "high"
+          },
+          {
+            "patient_id": "P-CONTAM-01",
+            "session_no": 9,
+            "region": "Vertex",
+            "metric": "hair_density_hairs_cm2",
+            "direction": "high"
+          }
+        ],
+        "trends": [],
+        "validation_errors": []
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 2,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 2,
+          "region_correct": 2,
+          "metric_correct": 2,
+          "direction_correct": 2,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 0,
+          "total": 0,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 0,
+          "total": 0,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 14.5
+    },
+    {
+      "scenario_id": "duplicate_measurement",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [],
+        "expected_trends": [],
+        "expected_validation_errors": [
+          {
+            "type": "duplicate_measurement",
+            "column": "patient_id+session_date+region"
+          }
+        ]
+      },
+      "actual": {
+        "anomalies": [],
+        "trends": [],
+        "validation_errors": [
+          {
+            "type": "duplicate_measurement",
+            "column": "patient_id+session_date+region"
+          }
+        ]
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 0,
+          "region_correct": 0,
+          "metric_correct": 0,
+          "direction_correct": 0,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 0,
+          "total": 0,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 1,
+          "total": 1,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 3.66
+    },
+    {
+      "scenario_id": "gradual_deterioration",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [],
+        "expected_trends": [
+          {
+            "patient_id": "P-DETERIORATE-01",
+            "region": "Vertex",
+            "direction": "Decreasing"
+          }
+        ],
+        "expected_validation_errors": []
+      },
+      "actual": {
+        "anomalies": [],
+        "trends": [
+          {
+            "patient_id": "P-DETERIORATE-01",
+            "region": "Vertex",
+            "direction": "Decreasing"
+          }
+        ],
+        "validation_errors": []
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 0,
+          "region_correct": 0,
+          "metric_correct": 0,
+          "direction_correct": 0,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 1,
+          "total": 1,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 0,
+          "total": 0,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 12.03
+    },
+    {
+      "scenario_id": "gradual_improvement",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [],
+        "expected_trends": [
+          {
+            "patient_id": "P-IMPROVE-01",
+            "region": "Vertex",
+            "direction": "Increasing"
+          }
+        ],
+        "expected_validation_errors": []
+      },
+      "actual": {
+        "anomalies": [],
+        "trends": [
+          {
+            "patient_id": "P-IMPROVE-01",
+            "region": "Vertex",
+            "direction": "Increasing"
+          }
+        ],
+        "validation_errors": []
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 0,
+          "region_correct": 0,
+          "metric_correct": 0,
+          "direction_correct": 0,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 1,
+          "total": 1,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 0,
+          "total": 0,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 6.57
+    },
+    {
+      "scenario_id": "insufficient_history",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [],
+        "expected_trends": [],
+        "expected_validation_errors": []
+      },
+      "actual": {
+        "anomalies": [],
+        "trends": [],
+        "validation_errors": []
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 0,
+          "region_correct": 0,
+          "metric_correct": 0,
+          "direction_correct": 0,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 0,
+          "total": 0,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 0,
+          "total": 0,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 6.23
+    },
+    {
+      "scenario_id": "invalid_date",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [],
+        "expected_trends": [],
+        "expected_validation_errors": [
+          {
+            "type": "invalid_date",
+            "column": "session_date"
+          }
+        ]
+      },
+      "actual": {
+        "anomalies": [],
+        "trends": [],
+        "validation_errors": [
+          {
+            "type": "invalid_date",
+            "column": "session_date"
+          }
+        ]
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 0,
+          "region_correct": 0,
+          "metric_correct": 0,
+          "direction_correct": 0,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 0,
+          "total": 0,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 1,
+          "total": 1,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 2.32
+    },
+    {
+      "scenario_id": "invalid_negative_value",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [],
+        "expected_trends": [],
+        "expected_validation_errors": [
+          {
+            "type": "negative_value",
+            "column": "hair_density_hairs_cm2"
+          }
+        ]
+      },
+      "actual": {
+        "anomalies": [],
+        "trends": [],
+        "validation_errors": [
+          {
+            "type": "negative_value",
+            "column": "hair_density_hairs_cm2"
+          }
+        ]
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 0,
+          "region_correct": 0,
+          "metric_correct": 0,
+          "direction_correct": 0,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 0,
+          "total": 0,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 1,
+          "total": 1,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 1.86
+    },
+    {
+      "scenario_id": "second_session_single_point_baseline",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [
+          {
+            "patient_id": "P-2NDSESSION-01",
+            "session_no": 2,
+            "region": "Vertex",
+            "metric": "hair_density_hairs_cm2",
+            "direction": "high"
+          }
+        ],
+        "expected_trends": [],
+        "expected_validation_errors": []
+      },
+      "actual": {
+        "anomalies": [
+          {
+            "patient_id": "P-2NDSESSION-01",
+            "session_no": 2,
+            "region": "Vertex",
+            "metric": "hair_density_hairs_cm2",
+            "direction": "high"
+          }
+        ],
+        "trends": [],
+        "validation_errors": []
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 1,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 1,
+          "region_correct": 1,
+          "metric_correct": 1,
+          "direction_correct": 1,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 0,
+          "total": 0,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 0,
+          "total": 0,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 5.4
+    },
+    {
+      "scenario_id": "stable_patient",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [],
+        "expected_trends": [
+          {
+            "patient_id": "P-STABLE-01",
+            "region": "Vertex",
+            "direction": "Stable"
+          }
+        ],
+        "expected_validation_errors": []
+      },
+      "actual": {
+        "anomalies": [],
+        "trends": [
+          {
+            "patient_id": "P-STABLE-01",
+            "region": "Vertex",
+            "direction": "Stable"
+          }
+        ],
+        "validation_errors": []
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 0,
+          "region_correct": 0,
+          "metric_correct": 0,
+          "direction_correct": 0,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 1,
+          "total": 1,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 0,
+          "total": 0,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 9.5
+    },
+    {
+      "scenario_id": "sudden_density_drop",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [
+          {
+            "patient_id": "P-DROP-01",
+            "session_no": 7,
+            "region": "Vertex",
+            "metric": "hair_density_hairs_cm2",
+            "direction": "low"
+          }
+        ],
+        "expected_trends": [],
+        "expected_validation_errors": []
+      },
+      "actual": {
+        "anomalies": [
+          {
+            "patient_id": "P-DROP-01",
+            "session_no": 7,
+            "region": "Vertex",
+            "metric": "hair_density_hairs_cm2",
+            "direction": "low"
+          }
+        ],
+        "trends": [],
+        "validation_errors": []
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 1,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 1,
+          "region_correct": 1,
+          "metric_correct": 1,
+          "direction_correct": 1,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 0,
+          "total": 0,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 0,
+          "total": 0,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 6.93
+    },
+    {
+      "scenario_id": "sudden_thickness_change",
+      "status": "passed",
+      "expected": {
+        "expected_anomalies": [
+          {
+            "patient_id": "P-THICK-01",
+            "session_no": 7,
+            "region": "Crown",
+            "metric": "hair_thickness_um",
+            "direction": "high"
+          }
+        ],
+        "expected_trends": [],
+        "expected_validation_errors": []
+      },
+      "actual": {
+        "anomalies": [
+          {
+            "patient_id": "P-THICK-01",
+            "session_no": 7,
+            "region": "Crown",
+            "metric": "hair_thickness_um",
+            "direction": "high"
+          }
+        ],
+        "trends": [],
+        "validation_errors": []
+      },
+      "metrics": {
+        "anomaly": {
+          "true_positive": 1,
+          "false_positive": 0,
+          "false_negative": 0,
+          "matched_events": 1,
+          "region_correct": 1,
+          "metric_correct": 1,
+          "direction_correct": 1,
+          "missing": [],
+          "extra": []
+        },
+        "trend": {
+          "correct": 0,
+          "total": 0,
+          "mismatches": []
+        },
+        "validation": {
+          "correct": 0,
+          "total": 0,
+          "unexpected": [],
+          "missing": []
+        }
+      },
+      "failure_reasons": [],
+      "execution_time_ms": 7.29
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "expected_anomalies": [],
+  "expected_trends": [],
+  "expected_validation_errors": [
+    {"type": "duplicate_measurement", "column": "patient_id+session_date+region"}
+  ]
+}

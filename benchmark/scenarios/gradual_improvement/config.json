@@ -1,0 +1,11 @@
+{
+  "scenario_id": "gradual_improvement",
+  "description": "8 seans boyunca yoğunlukta düzenli, kademeli artış (80 -> 110) — pencere bazlı trend yönü Increasing olmalı.",
+  "analysis_type": "trend",
+  "parameters": {
+    "window_size": 3,
+    "sigma_mult": 2.0,
+    "calibration_size": 6,
+    "floor_pct": 3.0
+  }
+}

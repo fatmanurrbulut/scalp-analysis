@@ -1,0 +1,2 @@
+patient_id,first_name,last_name,session_date,region,hair_density_hairs_cm2,hair_thickness_um,hair_type
+P-NEG-01,Test,P-NEG-01,2026-01-01,Vertex,-5,50,Terminal

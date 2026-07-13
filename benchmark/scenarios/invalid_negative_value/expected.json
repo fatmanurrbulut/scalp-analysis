@@ -1,0 +1,7 @@
+{
+  "expected_anomalies": [],
+  "expected_trends": [],
+  "expected_validation_errors": [
+    {"type": "negative_value", "column": "hair_density_hairs_cm2"}
+  ]
+}

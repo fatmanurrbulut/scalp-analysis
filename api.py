@@ -18,18 +18,17 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from clinical_thresholds import get_all_thresholds
-from margin_utils import prepare_session_df
+from data_validation import DataValidationError, validate_and_prepare
 from scalp_analysis import (
+    ALGORITHM_VERSION,
     ANOMALY_MIN_PCT_MARGIN,
     ANOMALY_THRESHOLD,
     ANOMALY_WINDOW,
     METRICS,
-    REQUIRED_COLUMNS,
     anomaly_row_to_dict,
     detect_anomalies,
 )
 from trend_analysis import (
-    BIO_REQUIRED_COLUMNS,
     analyze_clinic_trend,
     analyze_patient_trend,
 )
@@ -63,12 +62,19 @@ class AnomalyRecord(BaseModel):
     baseline_mean:  float
     baseline_std:   float
     z_score:        float | None
+    pct_deviation:  float | None = None
     direction:      str
     low_confidence: bool
     severity:       str | None = None
+    statistical_threshold: float | None = None
+    practical_threshold:   float | None = None
+    decision_rule:  str | None = None
     margin_used:    float | None = None
     margin_source:  str | None = None
     margin_excluded: int | None = None
+    calibration_points_used:     int | None = None
+    calibration_points_excluded: int | None = None
+    algorithm_version: str = ALGORITHM_VERSION
 
 
 class AnalysisSummary(BaseModel):
@@ -81,9 +87,12 @@ class AnalysisSummary(BaseModel):
 class AnalyzeResponse(BaseModel):
     generated_at:   str
     method:         str
+    algorithm_version: str = ALGORITHM_VERSION
+    calibration_mode:  str = "personal_calibration"
     window:         int
     threshold:      float
     min_pct_margin: float
+    fallback_margin: float | None = None
     summary:        AnalysisSummary
     anomalies:      list[AnomalyRecord]
 
@@ -192,48 +201,27 @@ _FLOOR_PCT_QUERY = Query(
     default=3.0, ge=0.0, le=50.0,
     description="Kişisel CV%'nin düşemeyeceği taban marj (varsayılan: 3.0)",
 )
-def _validate_df(df: pd.DataFrame) -> None:
-    missing = REQUIRED_COLUMNS - set(df.columns)
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "Eksik sütunlar", "columns": sorted(missing)},
-        )
+def _validate_and_prepare(df: pd.DataFrame, require_bio: bool) -> pd.DataFrame:
+    try:
+        return validate_and_prepare(df, require_bio=require_bio)
+    except DataValidationError as exc:
+        raise HTTPException(status_code=422, detail={"issues": exc.issues}) from exc
 
 
-def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
-    missing = {"patient_id", "session_date", "region"} - set(df.columns)
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "Eksik sütunlar", "columns": sorted(missing)},
-        )
-    return prepare_session_df(df)
-
-
-def _validate_bio_df(df: pd.DataFrame) -> None:
-    missing = BIO_REQUIRED_COLUMNS - set(df.columns)
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "Eksik sütunlar", "columns": sorted(missing)},
-        )
-
-
-def _csv_to_df(content: bytes) -> pd.DataFrame:
+def _csv_to_df(content: bytes, require_bio: bool = False) -> pd.DataFrame:
     try:
         df = pd.read_csv(io.BytesIO(content))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"CSV ayrıştırma hatası: {exc}") from exc
-    return _prepare_df(df)
+    return _validate_and_prepare(df, require_bio)
 
 
-def _json_records_to_df(records: list) -> pd.DataFrame:
+def _json_records_to_df(records: list, require_bio: bool = False) -> pd.DataFrame:
     try:
         df = pd.DataFrame(records)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"JSON dönüştürme hatası: {exc}") from exc
-    return _prepare_df(df)
+    return _validate_and_prepare(df, require_bio)
 
 
 def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
@@ -253,13 +241,18 @@ def _build_response(
     window: int,
     threshold: float,
     min_pct_margin: float,
+    use_personal_calibration: bool,
+    fallback_pct: float,
 ) -> AnalyzeResponse:
     return AnalyzeResponse(
         generated_at=datetime.now(timezone.utc).isoformat(),
         method=f"rolling_zscore_window_{window}_threshold_{threshold}_minpct_{min_pct_margin}",
+        algorithm_version=ALGORITHM_VERSION,
+        calibration_mode="personal_calibration" if use_personal_calibration else "fixed_margin",
         window=window,
         threshold=threshold,
         min_pct_margin=min_pct_margin,
+        fallback_margin=fallback_pct if use_personal_calibration else None,
         summary=AnalysisSummary(
             total_records=int(len(df)),
             total_patients=int(df["patient_id"].nunique()),
@@ -278,10 +271,9 @@ def _run_analysis(
     use_personal_calibration: bool = True,
     calibration_size: int = 6,
     floor_pct: float = 3.0,
+    fallback_pct: float = ANOMALY_MIN_PCT_MARGIN,
     patient_id: str | None = None,
 ) -> AnalyzeResponse:
-    _validate_df(df)
-
     if patient_id:
         df = df[df["patient_id"] == patient_id]
         if df.empty:
@@ -292,15 +284,17 @@ def _run_analysis(
 
     df        = detect_anomalies(
         df, window, threshold, min_pct_margin,
-        use_personal_calibration, calibration_size, floor_pct,
+        use_personal_calibration, calibration_size, floor_pct, fallback_pct,
     )
     anomalies = _extract_anomalies(df)
-    return _build_response(df, anomalies, window, threshold, min_pct_margin)
+    return _build_response(
+        df, anomalies, window, threshold, min_pct_margin, use_personal_calibration, fallback_pct,
+    )
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
-async def _df_from_request(request: Request) -> pd.DataFrame:
+async def _df_from_request(request: Request, require_bio: bool = False) -> pd.DataFrame:
     content_type = request.headers.get("content-type", "")
 
     if "multipart/form-data" in content_type:
@@ -308,12 +302,12 @@ async def _df_from_request(request: Request) -> pd.DataFrame:
         uploaded = form.get("file")
         if uploaded is None:
             raise HTTPException(status_code=400, detail="`file` form alanı eksik")
-        return _csv_to_df(await uploaded.read())
+        return _csv_to_df(await uploaded.read(), require_bio)
 
     if "application/json" in content_type:
         body = await request.json()
         if isinstance(body, list):
-            return _json_records_to_df(body)
+            return _json_records_to_df(body, require_bio)
         if isinstance(body, dict):
             records = body.get("records")
             if not isinstance(records, list):
@@ -321,7 +315,7 @@ async def _df_from_request(request: Request) -> pd.DataFrame:
                     status_code=422,
                     detail='JSON body "records" listesi içermeli: {"records": [{...}]}',
                 )
-            return _json_records_to_df(records)
+            return _json_records_to_df(records, require_bio)
         raise HTTPException(status_code=422, detail="JSON body bir liste veya obje olmalı")
 
     raise HTTPException(
@@ -498,8 +492,7 @@ async def trend_patient(
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Veri dosyası bulunamadı: {_DEFAULT_DATA_FILE}")
 
-    df = _csv_to_df(path.read_bytes())
-    _validate_bio_df(df)
+    df = _csv_to_df(path.read_bytes(), require_bio=True)
 
     if patient_id not in df["patient_id"].values:
         raise HTTPException(status_code=404, detail=f"patient_id bulunamadı: {patient_id}")
@@ -573,8 +566,7 @@ async def trend(
       `calibration_points_used` bilgisi
     - `patients`: her hasta için ayrı `PatientTrendResponse`
     """
-    df = await _df_from_request(request)
-    _validate_bio_df(df)
+    df = await _df_from_request(request, require_bio=True)
     result = analyze_clinic_trend(
         df,
         threshold_pct,

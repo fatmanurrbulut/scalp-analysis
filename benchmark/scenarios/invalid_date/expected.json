@@ -1,0 +1,7 @@
+{
+  "expected_anomalies": [],
+  "expected_trends": [],
+  "expected_validation_errors": [
+    {"type": "invalid_date", "column": "session_date"}
+  ]
+}

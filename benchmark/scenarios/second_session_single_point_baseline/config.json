@@ -1,0 +1,12 @@
+{
+  "scenario_id": "second_session_single_point_baseline",
+  "description": "2. seansta (baseline'da tek nokta, std hesaplanamaz) büyük bir sıçrama (100 -> 200) — personal_margin_only_low_confidence decision_rule'u ile pratik % marj üzerinden yakalanmalı.",
+  "analysis_type": "anomaly",
+  "parameters": {
+    "window": 3,
+    "threshold": 2.0,
+    "use_personal_calibration": true,
+    "calibration_size": 6,
+    "floor_pct": 3.0
+  }
+}
