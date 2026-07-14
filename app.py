@@ -361,27 +361,42 @@ def _aggregate_outlier_mask(
     floor_pct: float,
 ) -> list[bool]:
     """
-    7 bölge ortalamasının KENDİ serisi üzerinde rolling z-score anomali
-    tespiti — "herhangi bir bölgede anomali var mı" değil, "bu session'daki
-    ortalama, kendi yakın geçmişine göre gerçekten sıra dışı mı" sorusuna
-    cevap verir. Ana anomali tespitindeki gibi hem istatistiksel (z-score)
-    hem pratik (% sapma) eşik birlikte aranır — aksi halde zaten yumuşatılmış
-    bir ortalama serisinde küçük doğal dalgalanmalar bile z'yi şişirebilir.
+    7 bölge ortalamasının KENDİ serisi üzerinde, TREND'e göre (residual)
+    anomali tespiti. Düz ortalamaya göre z-score değil — sürekli ve düzgün
+    bir düşüş/artış trendi kendi başına hiç flag almamalı, sadece trendin
+    ANİDEN kırıldığı (beklenenden çok daha büyük bir sıçrama/düşüş ya da
+    yön değişimi) noktalar işaretlenmeli.
+
+    Yöntem: ardışık session'lar arası fark (diff) serisine bakılır. Her
+    diff, kendinden önceki `window` diff'in ortalaması/std'siyle
+    karşılaştırılır — yani "bu adım, alışılagelmiş adım büyüklüğüne göre
+    sıra dışı mı" sorusu sorulur (mutlak seviyeye göre değil). Sabit bir
+    trend devam ettiği sürece ardışık diff'ler birbirine yakın olur ve
+    z düşük kalır; trend kırıldığında diff aniden değişir ve z büyür.
+    Ana anomali tespitindeki gibi hem istatistiksel (z-score) hem pratik
+    (% sapma, mevcut değere göre) eşik birlikte aranır.
     """
     n = len(values)
     flags = [False] * n
-    for i in range(window, n):
-        val = values[i]
-        window_vals = [v for v in values[i - window:i] if v is not None]
-        if val is None or len(window_vals) < 2:
+    diffs = [
+        None if values[k] is None or values[k - 1] is None else values[k] - values[k - 1]
+        for k in range(1, n)
+    ]  # diffs[k-1] = values[k] - values[k-1]
+
+    for i in range(window + 1, n):
+        actual_diff = diffs[i - 1]
+        window_diffs = [d for d in diffs[i - 1 - window:i - 1] if d is not None]
+        if actual_diff is None or values[i - 1] is None or len(window_diffs) < 2:
             continue
-        m = sum(window_vals) / len(window_vals)
-        variance = sum((v - m) ** 2 for v in window_vals) / (len(window_vals) - 1)
+        m = sum(window_diffs) / len(window_diffs)
+        variance = sum((d - m) ** 2 for d in window_diffs) / (len(window_diffs) - 1)
         s = variance ** 0.5
+        pct_dev = abs(actual_diff - m) / abs(values[i - 1]) * 100 if values[i - 1] != 0 else 0
         if s == 0:
+            if actual_diff != m and pct_dev > floor_pct:
+                flags[i] = True
             continue
-        z = (val - m) / s
-        pct_dev = abs(val - m) / m * 100 if m != 0 else 0
+        z = (actual_diff - m) / s
         if abs(z) > z_threshold and pct_dev > floor_pct:
             flags[i] = True
     return flags

@@ -437,14 +437,30 @@ birbirinden bağımsız kaymaz.
 Grafikteki kırmızı X işaretleri "olası outlier" — ama bunlar `/analyze`
 endpoint'indeki per-region anomali bayrağıyla (herhangi bir bölgede anomali
 var mı) DEĞİL, **7 bölge ortalamasının kendi serisi** üzerinde çalışan ayrı
-bir rolling z-score kontrolüyle belirlenir (`app._aggregate_outlier_mask`):
-sidebar'daki **Outlier Eşiği (std)** ve **Taban Marj (%)** slider'ları
-(hem istatistiksel hem pratik eşik birlikte) kullanılır, pencere sabit
-`ANOMALY_WINDOW`'dur. Bu ayrım bilinçli: "bu session'da 7 bölgeden biri
-anormaldi" ile "bu session'daki ORTALAMA kendisi anormaldi" farklı sorulardır
-— ilk tanım denenmiş ama neredeyse her session'ı işaretlediği (7 bölgeden
-birinin sapması çok sık rastlanan bir durum olduğu) için gürültülü bulunup
-kaldırılmıştır.
+bir kontrolle belirlenir (`app._aggregate_outlier_mask`). Bu ayrım bilinçli:
+"bu session'da 7 bölgeden biri anormaldi" ile "bu session'daki ORTALAMA
+kendisi anormaldi" farklı sorulardır — ilk tanım denenmiş ama neredeyse her
+session'ı işaretlediği (7 bölgeden birinin sapması çok sık rastlanan bir
+durum olduğu) için gürültülü bulunup kaldırılmıştır.
+
+Yöntem **düz ortalamaya göre değil, TREND'e göre** (residual) çalışır —
+sürekli/düzgün bir düşüş ya da artış trendi kendi başına hiç flag almaz,
+sadece trendin **aniden kırıldığı** noktalar işaretlenir:
+
+1. Ardışık session'lar arası fark (`diff = değer[i] - değer[i-1]`) serisine
+   bakılır — ham değerlere değil.
+2. Her `diff`, kendinden önceki `ANOMALY_WINDOW` diff'in ortalama/std'siyle
+   karşılaştırılır: "bu adım, alışılagelmiş adım büyüklüğüne göre sıra dışı
+   mı" sorusu sorulur (mutlak seviyeye göre değil).
+3. ANOMALİ için hem istatistiksel (`|z| > threshold`, sidebar'daki **Outlier
+   Eşiği**) hem pratik (sapma, mevcut değerin **Taban Marj (%)**'inden
+   büyük) eşik birlikte aranır.
+
+Düz ortalamaya göre z-score kullanılsaydı, sabit bir trend devam ettikçe her
+yeni nokta "önceki düz pencere ortalamasından" sapmış görünür ve art arda
+flag alırdı (denendi, tam olarak bu sorunla karşılaşıldı) — fark serisine
+bakmak bu sorunu çözer: düzgün bir trendde ardışık adımlar birbirine yakın
+kalır, sadece trend gerçekten kırıldığında adım büyüklüğü sıçrar.
 
 ---
 
