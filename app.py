@@ -383,6 +383,20 @@ def _render_region_comparison(result: dict | None, label: str) -> None:
         line=dict(color=PALETTE[0], width=3),
         hovertemplate="%{x|%d %b %Y}: %{y}<extra></extra>",
     ))
+
+    # Bu session'da herhangi bir bölgede anomali işaretlenmişse (mevcut
+    # outlier_sessions — Terminal/Vellus tablosuyla aynı tanım), noktayı
+    # olası outlier olarak vurgula
+    _rc_outlier_x = [d for d in _rc_dates if pd.Timestamp(d) in outlier_sessions]
+    _rc_outlier_y = [m for d, m in zip(_rc_dates, _rc_means) if pd.Timestamp(d) in outlier_sessions]
+    if _rc_outlier_x:
+        _rc_fig.add_trace(go.Scatter(
+            x=_rc_outlier_x, y=_rc_outlier_y, mode="markers",
+            name="Olası Outlier (bir bölgede anomali var)",
+            marker=SEVERITY_MARKER_STYLES["heavy"],
+            hovertemplate="%{x|%d %b %Y}: %{y} — olası outlier<extra></extra>",
+        ))
+
     _rc_fig.update_layout(
         height=340,
         margin=dict(l=0, r=0, t=40, b=0),
