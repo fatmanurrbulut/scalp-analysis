@@ -393,31 +393,6 @@ def _render_region_comparison(result: dict | None, label: str) -> None:
     )
     st.plotly_chart(_rc_fig, use_container_width=True)
 
-    _rc_alpha = result["alpha"]
-    _rc_rows = [{
-        "Seans Tarihi": s["session_date"],
-        "Genel Ortalama": s["overall_mean"] if s["overall_mean"] is not None else "—",
-        "Genel Std": s["overall_std"] if s["overall_std"] is not None else "—",
-        "ANOVA F": s["anova_f"] if s["anova_f"] is not None else "—",
-        "ANOVA p": s["anova_p"] if s["anova_p"] is not None else "—",
-        "Yöntem": s["anova_method"],
-        "Not": s["warning"] or "—",
-    } for s in _rc_sessions]
-    _rc_df = pd.DataFrame(_rc_rows)
-
-    def _anova_row_style(row):
-        p = row["ANOVA p"]
-        if isinstance(p, (int, float)) and p < _rc_alpha:
-            return [_RED] * len(row)
-        return [_NORM] * len(row)
-
-    st.dataframe(
-        _rc_df.style.apply(_anova_row_style, axis=1),
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.caption(f"Kırmızı satırlar p < {_rc_alpha:.2f} (istatistiksel olarak anlamlı bölgeler-arası fark).")
-
 
 # ── Two-panel layout ──────────────────────────────────────────────────────────
 
