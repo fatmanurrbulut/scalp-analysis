@@ -8,6 +8,7 @@ import streamlit as st
 
 from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN, get_all_thresholds
 from data_validation import DataValidationError, validate_and_prepare
+from region_comparison import analyze_region_comparison
 from scalp_analysis import ANOMALY_WINDOW, detect_anomalies
 from trend_analysis import analyze_patient_trend
 
@@ -99,6 +100,20 @@ def _clinical_trend(
     )
 
 
+@st.cache_data(show_spinner=False)
+def _region_comparison(
+    df: pd.DataFrame,
+    pid: str,
+    metric: str,
+    window: int,
+    alpha: float,
+) -> dict | None:
+    pat = df[df["patient_id"] == pid]
+    if pat.empty:
+        return None
+    return analyze_region_comparison(df, pid, metric=metric, window=window, alpha=alpha)
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -158,6 +173,21 @@ with st.sidebar:
             min_value=5.0, max_value=30.0, value=FALLBACK_MIN_PCT_MARGIN, step=0.1,
         )
 
+    with st.expander("Bölge Karşılaştırma (ANOVA) Ayarları"):
+        anova_metric = st.selectbox(
+            "Metrik",
+            options=list(METRICS.keys()),
+            format_func=lambda k: METRICS[k],
+        )
+        anova_window = st.slider(
+            "ANOVA Penceresi (session, mevcut dahil)",
+            min_value=2, max_value=12, value=6, step=1,
+        )
+        anova_alpha = st.slider(
+            "Anlamlılık Eşiği (alpha)",
+            min_value=0.01, max_value=0.20, value=0.05, step=0.01,
+        )
+
     if selected_pid is None:
         st.info("Devam etmek için bir hasta seçin.")
         st.stop()
@@ -167,6 +197,7 @@ with st.sidebar:
 
 df = _analyze(df_raw, selected_pid, threshold, calibration_size, floor_pct, fallback_pct)
 clinical_trend = _clinical_trend(df_raw, selected_pid, fallback_pct, calibration_size, floor_pct)
+region_comparison_result = _region_comparison(df_raw, selected_pid, anova_metric, anova_window, anova_alpha)
 
 # Session dates that have at least one anomaly (any region, any metric)
 _omask = pd.Series(False, index=df.index)
@@ -548,3 +579,69 @@ else:
         f"✓ Seçilen eşik (±{threshold:.1f} std, kişisel kalibrasyon: ilk {calibration_size} seans, "
         f"taban %{floor_pct:.1f}) için outlier bulunamadı."
     )
+
+
+# ── Bölge Karşılaştırma (ANOVA) ─────────────────────────────────────────────────
+
+st.divider()
+st.subheader("Bölge Karşılaştırma (ANOVA)")
+st.caption(
+    "7 bölgenin session bazlı genel trendi ve her session için one-way ANOVA "
+    "sonucu. ANOVA, her bölgenin bu session'a kadarki (dahil) son "
+    f"{anova_window} session'ını grup sayarak hesaplanır — session'lar aynı "
+    "hastanın zaman serisi olduğu için bağımsız değildir, sonuç KESİN değil "
+    "GÖSTERGE olarak yorumlanmalıdır. Pencere henüz dolmadıysa sahte bir "
+    "p-değeri üretilmez, `insufficient_data` olarak işaretlenir."
+)
+
+if region_comparison_result is None or not region_comparison_result["sessions"]:
+    st.info("Bölge karşılaştırması için yeterli veri yok.")
+else:
+    _rc_sessions = region_comparison_result["sessions"]
+    _rc_regions = sorted({r for s in _rc_sessions for r in s["region_means"]})
+
+    _rc_fig = go.Figure()
+    for idx, region in enumerate(_rc_regions):
+        xs, ys = [], []
+        for s in _rc_sessions:
+            if region in s["region_means"]:
+                xs.append(s["session_date"])
+                ys.append(s["region_means"][region])
+        _rc_fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines+markers", name=region,
+            line=dict(color=PALETTE[idx % len(PALETTE)]),
+        ))
+    _rc_fig.update_layout(
+        height=380,
+        margin=dict(l=0, r=0, t=40, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis=dict(title="Seans Tarihi"),
+        yaxis=dict(title=METRICS[anova_metric]),
+        hovermode="x unified",
+    )
+    st.plotly_chart(_rc_fig, use_container_width=True)
+
+    _rc_alpha = region_comparison_result["alpha"]
+    _rc_rows = [{
+        "Seans Tarihi": s["session_date"],
+        "Genel Ortalama": s["overall_mean"] if s["overall_mean"] is not None else "—",
+        "Genel Std": s["overall_std"] if s["overall_std"] is not None else "—",
+        "ANOVA F": s["anova_f"] if s["anova_f"] is not None else "—",
+        "ANOVA p": s["anova_p"] if s["anova_p"] is not None else "—",
+        "Yöntem": s["anova_method"],
+        "Not": s["warning"] or "—",
+    } for s in _rc_sessions]
+    _rc_df = pd.DataFrame(_rc_rows)
+
+    def _anova_row_style(row):
+        p = row["ANOVA p"]
+        if isinstance(p, (int, float)) and p < _rc_alpha:
+            return [_RED] * len(row)
+        return [_NORM] * len(row)
+
+    st.dataframe(
+        _rc_df.style.apply(_anova_row_style, axis=1),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(f"Kırmızı satırlar p < {_rc_alpha:.2f} (istatistiksel olarak anlamlı bölgeler-arası fark).")

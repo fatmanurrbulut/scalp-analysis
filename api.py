@@ -32,6 +32,7 @@ from trend_analysis import (
     analyze_clinic_trend,
     analyze_patient_trend,
 )
+from region_comparison import analyze_region_comparison
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 
@@ -151,6 +152,28 @@ class PatientTrendResponse(BaseModel):
     regions:            list[RegionTrendRecord]
 
 
+class SessionRegionComparison(BaseModel):
+    session_no:     int
+    session_date:   str
+    region_means:   dict[str, float]
+    overall_mean:   float | None
+    overall_std:    float | None
+    anova_f:        float | None
+    anova_p:        float | None
+    anova_method:   str
+    warning:        str | None = None
+
+
+class RegionComparisonResponse(BaseModel):
+    patient_id:     str
+    patient_name:   str
+    metric:         str
+    window:         int
+    alpha:          float
+    note:           str
+    sessions:       list[SessionRegionComparison]
+
+
 class ClinicTrendResponse(BaseModel):
     generated_at:               str
     total_patients:             int
@@ -207,6 +230,18 @@ _FALLBACK_PCT_QUERY = Query(
         "Kişisel kalibrasyon için yeterli/temiz veri yokken kullanılan AGA fallback % marjı "
         f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN}). Yalnızca use_personal_calibration=true iken etkilidir."
     ),
+)
+_REGION_METRIC_QUERY = Query(
+    default="hair_density_hairs_cm2",
+    description=f"Karşılaştırılacak metrik. Seçenekler: {', '.join(METRICS)}",
+)
+_REGION_WINDOW_QUERY = Query(
+    default=6, ge=2, le=30,
+    description="ANOVA grubu için kullanılan session sayısı, mevcut session dahil (varsayılan: 6)",
+)
+_REGION_ALPHA_QUERY = Query(
+    default=0.05, ge=0.001, le=0.5,
+    description="Anlamlılık eşiği — response'ta taşınır, p<alpha yorumu tüketen tarafa bırakılır (varsayılan: 0.05)",
 )
 
 
@@ -520,6 +555,62 @@ async def trend_patient(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return _to_patient_trend_response(result)
+
+
+@app.get(
+    "/analysis/{patient_id}/region-comparison",
+    response_model=RegionComparisonResponse,
+    tags=["analysis"],
+    summary="7 bölgenin session bazlı karşılaştırması + ANOVA",
+)
+async def region_comparison(
+    patient_id: str,
+    metric: str = _REGION_METRIC_QUERY,
+    window: int = _REGION_WINDOW_QUERY,
+    alpha: float = _REGION_ALPHA_QUERY,
+) -> RegionComparisonResponse:
+    """
+    Her session için 7 bölgenin karşılaştırması + one-way ANOVA.
+
+    Veri kaynağı: `SCALP_DATA_FILE` ortam değişkeni ile tanımlı CSV dosyası.
+
+    Bu şemada bölge-session başına tek ölçüm bulunur (replicate yok —
+    aynı bölge/session için birden fazla satır zaten veri doğrulamasında
+    reddedilir). Bu yüzden ANOVA, her bölgenin bu session'a kadarki
+    (dahil) son `window` session'ını "grup" sayarak hesaplanır:
+
+    - `anova_method="window_fallback"`: pencere doldu, ANOVA hesaplandı.
+      Session'lar aynı hastanın zaman serisi olduğundan bağımsız değildir —
+      sonucu KESİN değil GÖSTERGE olarak yorumlayın (bkz. `note`).
+    - `anova_method="insufficient_data"`: pencere dolmadı veya en az 2
+      bölgede yeterli veri yok — `anova_f`/`anova_p` None döner, sahte bir
+      p-değeri ÜRETİLMEZ, `warning` alanında neden açıklanır.
+
+    Her session için `region_means` (o session'daki her bölgenin ham
+    değeri) ve cross-sectional `overall_mean`/`overall_std` de döner —
+    "genel trend" grafiği için kullanılabilir.
+    """
+    if metric not in METRICS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Geçersiz metric: {metric}. Seçenekler: {', '.join(METRICS)}",
+        )
+
+    if not _DEFAULT_DATA_FILE:
+        raise HTTPException(
+            status_code=400,
+            detail="SCALP_DATA_FILE ortam değişkeni tanımlı değil.",
+        )
+    path = Path(_DEFAULT_DATA_FILE).resolve()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Veri dosyası bulunamadı: {_DEFAULT_DATA_FILE}")
+
+    df = _csv_to_df(path.read_bytes())
+    if patient_id not in df["patient_id"].values:
+        raise HTTPException(status_code=404, detail=f"patient_id bulunamadı: {patient_id}")
+
+    result = analyze_region_comparison(df, patient_id, metric, window, alpha)
+    return RegionComparisonResponse(**result)
 
 
 @app.post(

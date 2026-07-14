@@ -53,6 +53,7 @@ Servis çalışırken: http://localhost:8000/docs
 | GET | `/analyze/{patient_id}` | Tek hasta anomali analizi |
 | POST | `/trend` | Tüm veri seti trend analizi |
 | GET | `/trend/{patient_id}` | Tek hasta trend analizi |
+| GET | `/analysis/{patient_id}/region-comparison` | 7 bölgenin session bazlı karşılaştırması + ANOVA |
 
 ## Örnek Kullanım
 
@@ -66,6 +67,9 @@ curl "http://localhost:8000/trend/PATIENT-UUID?window_size=3&sigma_mult=2.0"
 
 # Klinik referans eşikleri
 curl "http://localhost:8000/thresholds"
+
+# 7 bölgenin session bazlı karşılaştırması + ANOVA
+curl "http://localhost:8000/analysis/PATIENT-UUID/region-comparison?window=6"
 ```
 
 ---
@@ -389,6 +393,39 @@ Minimum `2` seans olmadan delta/regresyon hiç hesaplanmaz; `direction` varsayı
 - Bölge bazında ortalama `delta_density_pct` hesaplanarak en iyi ve en kötü bölgeler belirlenir.
 - Genel klinik istatistikleri döndürülür: ortalama yoğunluk, kalınlık, saç tipi dağılımı.
 
+### 4. Bölge Karşılaştırma (Region Comparison) + ANOVA
+
+`region_comparison.analyze_region_comparison`, her hasta için 7 bölgeyi
+session bazlı karşılaştırır ve bölgeler arasındaki farkın istatistiksel
+olarak anlamlı olup olmadığını (one-way ANOVA) test eder.
+
+**Neden klasik "session içi" ANOVA kullanılmıyor:** Klasik one-way ANOVA her
+grubun (burada: bölgenin) kendi içinde birden fazla tekrarlı ölçüme (replicate)
+sahip olmasını gerektirir — within-group varyans buradan hesaplanır. Bu
+projenin veri modelinde her `(patient_id, region, session_date)` kombinasyonu
+için **tek bir ölçüm** vardır; `data_validation._check_duplicates` aynı
+bölge/session için birden fazla satırı zaten doğrulama hatası sayar. Yani
+replicate bu şemada yalnızca eksik değil, mimari olarak imkânsızdır.
+
+Bunun yerine **pencere tabanlı (window_fallback)** yaklaşım kullanılır: her
+bölgenin, ilgili session'a kadarki (dahil) son `window` session'daki değerleri
+o bölgenin "grubu" sayılır, 7 grup üzerinde `scipy.stats.f_oneway` çalıştırılır.
+
+- Pencere henüz dolmadıysa (session sayısı `< window`) veya en az 2 bölgede
+  yeterli veri yoksa → `anova_method="insufficient_data"`, `anova_p=None` —
+  **sahte bir p-değeri üretilmez**, `warning` alanında neden açıklanır.
+- Pencere doluysa → `anova_method="window_fallback"`, `anova_f`/`anova_p` dolu.
+
+Session'lar aynı hastanın zaman serisi olduğu için birbirinden bağımsız
+değildir — bu, klasik ANOVA bağımsızlık varsayımını ihlal eder. Bu yüzden
+sonuç **kesin değil, gösterge** olarak yorumlanmalıdır (response'taki `note`
+alanı bunu açıkça belirtir).
+
+Her session için ayrıca `region_means` (o session'daki her bölgenin ham
+değeri — replicate olmadığından "mean" = tek ölçümün kendisi) ve cross-sectional
+`overall_mean`/`overall_std` döner; bunlar dashboard'daki "genel trend"
+grafiğinde kullanılır.
+
 ---
 
 ## Testleri Çalıştırma
@@ -402,9 +439,9 @@ pytest tests/test_anomaly_detection.py -v    # tek dosya
 ```
 
 Test paketi (`tests/`): `test_data_validation.py`, `test_margin_utils.py`,
-`test_anomaly_detection.py`, `test_trend_analysis.py`, `test_api_analyze.py`,
-`test_api_trend.py`, `test_benchmark.py`. FastAPI endpoint testleri
-`fastapi.testclient.TestClient` (`httpx` üzerinden) kullanır.
+`test_anomaly_detection.py`, `test_trend_analysis.py`, `test_region_comparison.py`,
+`test_api_analyze.py`, `test_api_trend.py`, `test_benchmark.py`. FastAPI endpoint
+testleri `fastapi.testclient.TestClient` (`httpx` üzerinden) kullanır.
 
 ---
 
