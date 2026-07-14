@@ -452,17 +452,7 @@ with right_col:
 
 st.divider()
 st.subheader("Bölge Karşılaştırma (ANOVA)")
-st.caption(
-    "7 bölgenin session bazlı genel trendi (7 bölgenin ortalaması, tek çizgi) "
-    "ve her session için one-way ANOVA sonucu — yoğunluk ve kalınlık ayrı "
-    "grafiklerde. ANOVA, her bölgenin bu session'a kadarki (dahil) son "
-    f"{calibration_size} session'ını grup sayarak hesaplanır — pencere "
-    "sidebar'daki **Kişisel Kalibrasyon Seansı** değeriyle birebir aynıdır "
-    "(yukarıdaki trend yönü hesabıyla senkron). Session'lar aynı hastanın "
-    "zaman serisi olduğu için bağımsız değildir, sonuç KESİN değil GÖSTERGE "
-    "olarak yorumlanmalıdır. Pencere henüz dolmadıysa sahte bir p-değeri "
-    "üretilmez, `insufficient_data` olarak işaretlenir."
-)
+st.caption("7 bölgenin session bazlı ortalaması — yoğunluk ve kalınlık ayrı grafiklerde.")
 
 _rc_col_density, _rc_col_thickness = st.columns(2)
 with _rc_col_density:
