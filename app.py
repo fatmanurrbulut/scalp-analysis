@@ -598,19 +598,29 @@ if region_comparison_result is None or not region_comparison_result["sessions"]:
     st.info("Bölge karşılaştırması için yeterli veri yok.")
 else:
     _rc_sessions = region_comparison_result["sessions"]
-    _rc_regions = sorted({r for s in _rc_sessions for r in s["region_means"]})
+
+    # Tek çizgi: her session'daki 7 bölgenin ortalaması (overall_mean),
+    # ±overall_std bandıyla (cross-sectional — bölge bazlı dağılımın genişliği)
+    _rc_dates      = [s["session_date"] for s in _rc_sessions]
+    _rc_means      = [s["overall_mean"] for s in _rc_sessions]
+    _rc_stds       = [s["overall_std"] or 0.0 for s in _rc_sessions]
+    _rc_upper      = [m + sd if m is not None else None for m, sd in zip(_rc_means, _rc_stds)]
+    _rc_lower      = [m - sd if m is not None else None for m, sd in zip(_rc_means, _rc_stds)]
 
     _rc_fig = go.Figure()
-    for idx, region in enumerate(_rc_regions):
-        xs, ys = [], []
-        for s in _rc_sessions:
-            if region in s["region_means"]:
-                xs.append(s["session_date"])
-                ys.append(s["region_means"][region])
-        _rc_fig.add_trace(go.Scatter(
-            x=xs, y=ys, mode="lines+markers", name=region,
-            line=dict(color=PALETTE[idx % len(PALETTE)]),
-        ))
+    _rc_band_color = _to_rgba(PALETTE[0], 0.15)
+    _rc_fig.add_trace(go.Scatter(
+        x=_rc_dates + _rc_dates[::-1],
+        y=_rc_upper + _rc_lower[::-1],
+        fill="toself", fillcolor=_rc_band_color,
+        line=dict(width=0), hoverinfo="skip", showlegend=False,
+    ))
+    _rc_fig.add_trace(go.Scatter(
+        x=_rc_dates, y=_rc_means, mode="lines+markers",
+        name="7 Bölge Ortalaması",
+        line=dict(color=PALETTE[0], width=3),
+        hovertemplate="%{x|%d %b %Y}: %{y}<extra></extra>",
+    ))
     _rc_fig.update_layout(
         height=380,
         margin=dict(l=0, r=0, t=40, b=0),
