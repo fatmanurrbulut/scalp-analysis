@@ -27,12 +27,11 @@ METRICS = {
     "hair_thickness_um":      "Hair Thickness (µm)",
 }
 
-# Bölge Karşılaştırma (ANOVA) paneli için sabit varsayılanlar — pencere
-# (window) hariç, o sidebar'daki "Kişisel Kalibrasyon Seansı" (calibration_size)
+# Bölge Karşılaştırma (ANOVA) paneli için sabit anlamlılık eşiği — pencere
+# (window) sidebar'daki "Kişisel Kalibrasyon Seansı" (calibration_size)
 # değeriyle birebir aynıdır (trend window_size'ı da bu değeri kullanır),
 # ayrı ayrı kaymasın diye tek kontrolden yönetilir
-ANOVA_METRIC = "hair_density_hairs_cm2"
-ANOVA_ALPHA  = 0.05
+ANOVA_ALPHA = 0.05
 
 _RED    = "background-color: rgba(229,57,53,0.15); color: #e53935"
 _ORANGE = "background-color: rgba(255,152,0,0.15); color: #ff9800"
@@ -197,7 +196,9 @@ with st.sidebar:
 
 df = _analyze(df_raw, selected_pid, threshold, calibration_size, floor_pct, fallback_pct)
 clinical_trend = _clinical_trend(df_raw, selected_pid, calibration_size, fallback_pct, calibration_size, floor_pct)
-region_comparison_result = _region_comparison(df_raw, selected_pid, ANOVA_METRIC, calibration_size, ANOVA_ALPHA)
+region_comparison_results = {
+    m: _region_comparison(df_raw, selected_pid, m, calibration_size, ANOVA_ALPHA) for m in METRICS
+}
 
 # Session dates that have at least one anomaly (any region, any metric)
 _omask = pd.Series(False, index=df.index)
@@ -351,6 +352,73 @@ def _render_chart(metric: str, label: str) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+# ── Region comparison (ANOVA) renderer ─────────────────────────────────────────
+
+def _render_region_comparison(result: dict | None, label: str) -> None:
+    if result is None or not result["sessions"]:
+        st.info("Bölge karşılaştırması için yeterli veri yok.")
+        return
+
+    _rc_sessions = result["sessions"]
+
+    # Tek çizgi: her session'daki 7 bölgenin ortalaması (overall_mean),
+    # ±overall_std bandıyla (cross-sectional — bölge bazlı dağılımın genişliği)
+    _rc_dates = [s["session_date"] for s in _rc_sessions]
+    _rc_means = [s["overall_mean"] for s in _rc_sessions]
+    _rc_stds  = [s["overall_std"] or 0.0 for s in _rc_sessions]
+    _rc_upper = [m + sd if m is not None else None for m, sd in zip(_rc_means, _rc_stds)]
+    _rc_lower = [m - sd if m is not None else None for m, sd in zip(_rc_means, _rc_stds)]
+
+    _rc_fig = go.Figure()
+    _rc_band_color = _to_rgba(PALETTE[0], 0.15)
+    _rc_fig.add_trace(go.Scatter(
+        x=_rc_dates + _rc_dates[::-1],
+        y=_rc_upper + _rc_lower[::-1],
+        fill="toself", fillcolor=_rc_band_color,
+        line=dict(width=0), hoverinfo="skip", showlegend=False,
+    ))
+    _rc_fig.add_trace(go.Scatter(
+        x=_rc_dates, y=_rc_means, mode="lines+markers",
+        name="7 Bölge Ortalaması",
+        line=dict(color=PALETTE[0], width=3),
+        hovertemplate="%{x|%d %b %Y}: %{y}<extra></extra>",
+    ))
+    _rc_fig.update_layout(
+        height=340,
+        margin=dict(l=0, r=0, t=40, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis=dict(title="Seans Tarihi"),
+        yaxis=dict(title=label),
+        hovermode="x unified",
+    )
+    st.plotly_chart(_rc_fig, use_container_width=True)
+
+    _rc_alpha = result["alpha"]
+    _rc_rows = [{
+        "Seans Tarihi": s["session_date"],
+        "Genel Ortalama": s["overall_mean"] if s["overall_mean"] is not None else "—",
+        "Genel Std": s["overall_std"] if s["overall_std"] is not None else "—",
+        "ANOVA F": s["anova_f"] if s["anova_f"] is not None else "—",
+        "ANOVA p": s["anova_p"] if s["anova_p"] is not None else "—",
+        "Yöntem": s["anova_method"],
+        "Not": s["warning"] or "—",
+    } for s in _rc_sessions]
+    _rc_df = pd.DataFrame(_rc_rows)
+
+    def _anova_row_style(row):
+        p = row["ANOVA p"]
+        if isinstance(p, (int, float)) and p < _rc_alpha:
+            return [_RED] * len(row)
+        return [_NORM] * len(row)
+
+    st.dataframe(
+        _rc_df.style.apply(_anova_row_style, axis=1),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(f"Kırmızı satırlar p < {_rc_alpha:.2f} (istatistiksel olarak anlamlı bölgeler-arası fark).")
+
+
 # ── Two-panel layout ──────────────────────────────────────────────────────────
 
 left_col, right_col = st.columns([3, 2])
@@ -362,81 +430,6 @@ with left_col:
         _render_chart(metric_keys[0], list(METRICS.values())[0])
     with tab2:
         _render_chart(metric_keys[1], list(METRICS.values())[1])
-
-    st.subheader("Bölge Karşılaştırma (ANOVA)")
-    st.caption(
-        "7 bölgenin session bazlı genel trendi (7 bölgenin ortalaması, tek "
-        "çizgi) ve her session için one-way ANOVA sonucu. ANOVA, her bölgenin "
-        f"bu session'a kadarki (dahil) son {calibration_size} session'ını grup "
-        "sayarak hesaplanır — pencere sidebar'daki **Kişisel Kalibrasyon "
-        "Seansı** değeriyle birebir aynıdır (yukarıdaki trend yönü hesabıyla "
-        "senkron). Session'lar aynı hastanın zaman serisi olduğu için bağımsız değildir, "
-        "sonuç KESİN değil GÖSTERGE olarak yorumlanmalıdır. Pencere henüz "
-        "dolmadıysa sahte bir p-değeri "
-        "üretilmez, `insufficient_data` olarak işaretlenir."
-    )
-
-    if region_comparison_result is None or not region_comparison_result["sessions"]:
-        st.info("Bölge karşılaştırması için yeterli veri yok.")
-    else:
-        _rc_sessions = region_comparison_result["sessions"]
-
-        # Tek çizgi: her session'daki 7 bölgenin ortalaması (overall_mean),
-        # ±overall_std bandıyla (cross-sectional — bölge bazlı dağılımın genişliği)
-        _rc_dates = [s["session_date"] for s in _rc_sessions]
-        _rc_means = [s["overall_mean"] for s in _rc_sessions]
-        _rc_stds  = [s["overall_std"] or 0.0 for s in _rc_sessions]
-        _rc_upper = [m + sd if m is not None else None for m, sd in zip(_rc_means, _rc_stds)]
-        _rc_lower = [m - sd if m is not None else None for m, sd in zip(_rc_means, _rc_stds)]
-
-        _rc_fig = go.Figure()
-        _rc_band_color = _to_rgba(PALETTE[0], 0.15)
-        _rc_fig.add_trace(go.Scatter(
-            x=_rc_dates + _rc_dates[::-1],
-            y=_rc_upper + _rc_lower[::-1],
-            fill="toself", fillcolor=_rc_band_color,
-            line=dict(width=0), hoverinfo="skip", showlegend=False,
-        ))
-        _rc_fig.add_trace(go.Scatter(
-            x=_rc_dates, y=_rc_means, mode="lines+markers",
-            name="7 Bölge Ortalaması",
-            line=dict(color=PALETTE[0], width=3),
-            hovertemplate="%{x|%d %b %Y}: %{y}<extra></extra>",
-        ))
-        _rc_fig.update_layout(
-            height=340,
-            margin=dict(l=0, r=0, t=40, b=0),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-            xaxis=dict(title="Seans Tarihi"),
-            yaxis=dict(title=METRICS[ANOVA_METRIC]),
-            hovermode="x unified",
-        )
-        st.plotly_chart(_rc_fig, use_container_width=True)
-
-        _rc_alpha = region_comparison_result["alpha"]
-        _rc_rows = [{
-            "Seans Tarihi": s["session_date"],
-            "Genel Ortalama": s["overall_mean"] if s["overall_mean"] is not None else "—",
-            "Genel Std": s["overall_std"] if s["overall_std"] is not None else "—",
-            "ANOVA F": s["anova_f"] if s["anova_f"] is not None else "—",
-            "ANOVA p": s["anova_p"] if s["anova_p"] is not None else "—",
-            "Yöntem": s["anova_method"],
-            "Not": s["warning"] or "—",
-        } for s in _rc_sessions]
-        _rc_df = pd.DataFrame(_rc_rows)
-
-        def _anova_row_style(row):
-            p = row["ANOVA p"]
-            if isinstance(p, (int, float)) and p < _rc_alpha:
-                return [_RED] * len(row)
-            return [_NORM] * len(row)
-
-        st.dataframe(
-            _rc_df.style.apply(_anova_row_style, axis=1),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption(f"Kırmızı satırlar p < {_rc_alpha:.2f} (istatistiksel olarak anlamlı bölgeler-arası fark).")
 
 with right_col:
     st.subheader("Terminal / Vellus Sayımı")
@@ -478,6 +471,31 @@ with right_col:
         )
     else:
         st.info("Bu veri setinde `hair_type` sütunu yok.")
+
+
+# ── Bölge Karşılaştırma (ANOVA) ─────────────────────────────────────────────────
+
+st.divider()
+st.subheader("Bölge Karşılaştırma (ANOVA)")
+st.caption(
+    "7 bölgenin session bazlı genel trendi (7 bölgenin ortalaması, tek çizgi) "
+    "ve her session için one-way ANOVA sonucu — yoğunluk ve kalınlık ayrı "
+    "grafiklerde. ANOVA, her bölgenin bu session'a kadarki (dahil) son "
+    f"{calibration_size} session'ını grup sayarak hesaplanır — pencere "
+    "sidebar'daki **Kişisel Kalibrasyon Seansı** değeriyle birebir aynıdır "
+    "(yukarıdaki trend yönü hesabıyla senkron). Session'lar aynı hastanın "
+    "zaman serisi olduğu için bağımsız değildir, sonuç KESİN değil GÖSTERGE "
+    "olarak yorumlanmalıdır. Pencere henüz dolmadıysa sahte bir p-değeri "
+    "üretilmez, `insufficient_data` olarak işaretlenir."
+)
+
+_rc_col_density, _rc_col_thickness = st.columns(2)
+with _rc_col_density:
+    st.markdown(f"**{METRICS['hair_density_hairs_cm2']}**")
+    _render_region_comparison(region_comparison_results["hair_density_hairs_cm2"], METRICS["hair_density_hairs_cm2"])
+with _rc_col_thickness:
+    st.markdown(f"**{METRICS['hair_thickness_um']}**")
+    _render_region_comparison(region_comparison_results["hair_thickness_um"], METRICS["hair_thickness_um"])
 
 
 # ── Clinical reference panel ──────────────────────────────────────────────────
