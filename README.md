@@ -426,6 +426,26 @@ değeri — replicate olmadığından "mean" = tek ölçümün kendisi) ve cross
 `overall_mean`/`overall_std` döner; bunlar dashboard'daki "genel trend"
 grafiğinde kullanılır.
 
+**Dashboard paneli (`app.py`):** Ana trend/anomali grafiğinin altında,
+"Bölge Karşılaştırma (ANOVA)" başlığıyla, yoğunluk ve kalınlık için **yan
+yana iki ayrı grafik** gösterilir — her biri o metriğin 7 bölge ortalamasını
+(tek çizgi) ±std bandıyla çizer. `window` parametresi ayrı bir kontrol
+değildir; sidebar'daki **Kişisel Kalibrasyon Seansı** (`calibration_size`)
+değeriyle birebir aynıdır, böylece trend yönü hesabıyla ANOVA penceresi
+birbirinden bağımsız kaymaz.
+
+Grafikteki kırmızı X işaretleri "olası outlier" — ama bunlar `/analyze`
+endpoint'indeki per-region anomali bayrağıyla (herhangi bir bölgede anomali
+var mı) DEĞİL, **7 bölge ortalamasının kendi serisi** üzerinde çalışan ayrı
+bir rolling z-score kontrolüyle belirlenir (`app._aggregate_outlier_mask`):
+sidebar'daki **Outlier Eşiği (std)** ve **Taban Marj (%)** slider'ları
+(hem istatistiksel hem pratik eşik birlikte) kullanılır, pencere sabit
+`ANOMALY_WINDOW`'dur. Bu ayrım bilinçli: "bu session'da 7 bölgeden biri
+anormaldi" ile "bu session'daki ORTALAMA kendisi anormaldi" farklı sorulardır
+— ilk tanım denenmiş ama neredeyse her session'ı işaretlediği (7 bölgeden
+birinin sapması çok sık rastlanan bir durum olduğu) için gürültülü bulunup
+kaldırılmıştır.
+
 ---
 
 ## Testleri Çalıştırma

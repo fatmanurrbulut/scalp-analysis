@@ -354,6 +354,39 @@ def _render_chart(metric: str, label: str) -> None:
 
 # ── Region comparison (ANOVA) renderer ─────────────────────────────────────────
 
+def _aggregate_outlier_mask(
+    values: list[float | None],
+    window: int,
+    z_threshold: float,
+    floor_pct: float,
+) -> list[bool]:
+    """
+    7 bölge ortalamasının KENDİ serisi üzerinde rolling z-score anomali
+    tespiti — "herhangi bir bölgede anomali var mı" değil, "bu session'daki
+    ortalama, kendi yakın geçmişine göre gerçekten sıra dışı mı" sorusuna
+    cevap verir. Ana anomali tespitindeki gibi hem istatistiksel (z-score)
+    hem pratik (% sapma) eşik birlikte aranır — aksi halde zaten yumuşatılmış
+    bir ortalama serisinde küçük doğal dalgalanmalar bile z'yi şişirebilir.
+    """
+    n = len(values)
+    flags = [False] * n
+    for i in range(window, n):
+        val = values[i]
+        window_vals = [v for v in values[i - window:i] if v is not None]
+        if val is None or len(window_vals) < 2:
+            continue
+        m = sum(window_vals) / len(window_vals)
+        variance = sum((v - m) ** 2 for v in window_vals) / (len(window_vals) - 1)
+        s = variance ** 0.5
+        if s == 0:
+            continue
+        z = (val - m) / s
+        pct_dev = abs(val - m) / m * 100 if m != 0 else 0
+        if abs(z) > z_threshold and pct_dev > floor_pct:
+            flags[i] = True
+    return flags
+
+
 def _render_region_comparison(result: dict | None, label: str) -> None:
     if result is None or not result["sessions"]:
         st.info("Bölge karşılaştırması için yeterli veri yok.")
@@ -384,15 +417,16 @@ def _render_region_comparison(result: dict | None, label: str) -> None:
         hovertemplate="%{x|%d %b %Y}: %{y}<extra></extra>",
     ))
 
-    # Bu session'da herhangi bir bölgede anomali işaretlenmişse (mevcut
-    # outlier_sessions — Terminal/Vellus tablosuyla aynı tanım), noktayı
-    # olası outlier olarak vurgula
-    _rc_outlier_x = [d for d in _rc_dates if pd.Timestamp(d) in outlier_sessions]
-    _rc_outlier_y = [m for d, m in zip(_rc_dates, _rc_means) if pd.Timestamp(d) in outlier_sessions]
+    # 7 bölge ortalamasının kendi serisi rolling z-score ile kontrol edilir
+    # (hem istatistiksel hem pratik eşik birlikte) — "bir bölgede anomali var"
+    # değil, "ortalamanın kendisi sıra dışı mı" sorusuna cevap verir
+    _rc_outlier_mask = _aggregate_outlier_mask(_rc_means, ANOMALY_WINDOW, threshold, floor_pct)
+    _rc_outlier_x = [d for d, flag in zip(_rc_dates, _rc_outlier_mask) if flag]
+    _rc_outlier_y = [m for m, flag in zip(_rc_means, _rc_outlier_mask) if flag]
     if _rc_outlier_x:
         _rc_fig.add_trace(go.Scatter(
             x=_rc_outlier_x, y=_rc_outlier_y, mode="markers",
-            name="Olası Outlier (bir bölgede anomali var)",
+            name="Olası Outlier (ortalama sıra dışı)",
             marker=SEVERITY_MARKER_STYLES["heavy"],
             hovertemplate="%{x|%d %b %Y}: %{y} — olası outlier<extra></extra>",
         ))
