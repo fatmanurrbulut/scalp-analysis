@@ -75,6 +75,10 @@ class AnomalyRecord(BaseModel):
     margin_excluded: int | None = None
     calibration_points_used:     int | None = None
     calibration_points_excluded: int | None = None
+    gap_days:                     int | None = None
+    time_sensitivity_pct_per_day: float | None = None
+    time_sensitivity_source:      str | None = None
+    margin_widened:                bool = False
     algorithm_version: str = ALGORITHM_VERSION
 
 
@@ -231,6 +235,25 @@ _FALLBACK_PCT_QUERY = Query(
         f"(varsayılan: {ANOMALY_MIN_PCT_MARGIN}). Yalnızca use_personal_calibration=true iken etkilidir."
     ),
 )
+_USE_TIME_AWARE_MARGIN_QUERY = Query(
+    default=False,
+    description=(
+        "True ise, her hasta × bölge için marj hastanın kendi ardışık seans "
+        "farklarından öğrenilen 'gün başına doğal % dalgalanma' ile gevşetilir "
+        "(iki seans arası 2 hafta mı 8 ay mı geçtiği artık hesaba katılır). "
+        "trend_analysis zaten yüksek güvenle bilinen bir eğilim (Increasing/"
+        "Decreasing, confidence=high) tespit ettiyse o bölge için gevşetme "
+        "yapılmaz — gerçek trend maskelenmesin diye. Varsayılan: false (opt-in), "
+        "geriye dönük uyumluluk için kapalı."
+    ),
+)
+_MAX_WIDEN_FACTOR_QUERY = Query(
+    default=2.0, ge=1.0, le=10.0,
+    description=(
+        "use_time_aware_margin=true iken, gevşetilmiş marjın taban marjın kaç "
+        "katını aşamayacağı (sabit tavan). Varsayılan: 2.0."
+    ),
+)
 _REGION_METRIC_QUERY = Query(
     default="hair_density_hairs_cm2",
     description=f"Karşılaştırılacak metrik. Seçenekler: {', '.join(METRICS)}",
@@ -266,6 +289,45 @@ def _json_records_to_df(records: list, require_bio: bool = False) -> pd.DataFram
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"JSON dönüştürme hatası: {exc}") from exc
     return _validate_and_prepare(df, require_bio)
+
+
+def _build_trend_lookup(
+    df: pd.DataFrame,
+    calibration_size: int,
+    floor_pct: float,
+    fallback_pct: float,
+) -> dict[tuple[str, str], dict]:
+    """
+    detect_anomalies'in `trend_lookup` parametresi için (patient_id, region) ->
+    {"direction", "confidence"} eşlemesi kurar.
+
+    scalp_analysis.py ile trend_analysis.py birbirini import etmiyor (circular
+    import önlemi, bkz. margin_utils.py docstring'i) — bu yüzden trend bilgisi
+    burada (orkestrasyon katmanında) önceden hesaplanıp detect_anomalies'e
+    parametre olarak geçirilir; iki modül birbirinden habersiz kalır.
+
+    calibration_size/floor_pct, anomali marjıyla AYNI kişisel kalibrasyon
+    kontrolünden gelir (app.py'deki sidebar'la aynı mantık: tek kontrolden
+    yönetilir); trend'in kendi window_size/sigma_mult/threshold_pct'i
+    analyze_patient_trend'in varsayılanlarını kullanır.
+    """
+    lookup: dict[tuple[str, str], dict] = {}
+    for pid in df["patient_id"].unique():
+        try:
+            result = analyze_patient_trend(
+                df, pid,
+                calibration_size=calibration_size,
+                floor_pct=floor_pct,
+                fallback_pct=fallback_pct,
+            )
+        except ValueError:
+            continue
+        for region in result["regions"]:
+            lookup[(pid, region["region"])] = {
+                "direction": region["direction"],
+                "confidence": region["confidence"],
+            }
+    return lookup
 
 
 def _extract_anomalies(df: pd.DataFrame) -> list[dict]:
@@ -317,6 +379,8 @@ def _run_analysis(
     floor_pct: float = 3.0,
     fallback_pct: float = ANOMALY_MIN_PCT_MARGIN,
     patient_id: str | None = None,
+    use_time_aware_margin: bool = False,
+    max_widen_factor: float = 2.0,
 ) -> AnalyzeResponse:
     if patient_id:
         df = df[df["patient_id"] == patient_id]
@@ -326,9 +390,22 @@ def _run_analysis(
                 detail=f"patient_id bulunamadı: {patient_id}",
             )
 
+    # trend_lookup, use_time_aware_margin=True iken önceden (burada, orkestrasyon
+    # katmanında) kurulur — scalp_analysis.py trend_analysis.py'yi import etmez
+    # (bkz. margin_utils.py'deki circular-import kısıtlaması), bu yüzden trend
+    # bilgisi detect_anomalies'e dışarıdan hazır bir lookup olarak geçirilir.
+    trend_lookup = (
+        _build_trend_lookup(df, calibration_size, floor_pct, fallback_pct)
+        if use_time_aware_margin
+        else None
+    )
+
     df        = detect_anomalies(
         df, window, threshold, min_pct_margin,
         use_personal_calibration, calibration_size, floor_pct, fallback_pct,
+        trend_lookup=trend_lookup,
+        use_time_aware_margin=use_time_aware_margin,
+        max_widen_factor=max_widen_factor,
     )
     anomalies = _extract_anomalies(df)
     return _build_response(
@@ -406,6 +483,8 @@ async def analyze(
     calibration_size:         int   = _CALIBRATION_SIZE_QUERY,
     floor_pct:                float = _FLOOR_PCT_QUERY,
     fallback_pct:             float = _FALLBACK_PCT_QUERY,
+    use_time_aware_margin:    bool  = _USE_TIME_AWARE_MARGIN_QUERY,
+    max_widen_factor:         float = _MAX_WIDEN_FACTOR_QUERY,
 ) -> AnalyzeResponse:
     """
     İki içerik türü desteklenir:
@@ -425,11 +504,18 @@ async def analyze(
 
     Her anomali için `patient_id`, `session_no`, `region`, `metric`,
     `value`, `baseline_mean`, `baseline_std`, `z_score`, `direction` döner.
+
+    `use_time_aware_margin=true` isteniyorsa `hair_type` içeren biyolojik
+    sütunlar zorunlu hale gelir (trend yönü/güveni bu sütunlardan hesaplanır).
     """
-    df = await _df_from_request(request)
+    # use_time_aware_margin=True iken trend_lookup kurulabilmesi için biyolojik
+    # sütunlar (hair_type dahil) zorunlu — /trend endpoint'iyle aynı seviye.
+    df = await _df_from_request(request, require_bio=use_time_aware_margin)
     return _run_analysis(
         df, window, threshold, min_pct_margin, use_personal_calibration,
         calibration_size, floor_pct, fallback_pct,
+        use_time_aware_margin=use_time_aware_margin,
+        max_widen_factor=max_widen_factor,
     )
 
 
@@ -448,6 +534,8 @@ async def analyze_patient(
     calibration_size:         int   = _CALIBRATION_SIZE_QUERY,
     floor_pct:                float = _FLOOR_PCT_QUERY,
     fallback_pct:             float = _FALLBACK_PCT_QUERY,
+    use_time_aware_margin:    bool  = _USE_TIME_AWARE_MARGIN_QUERY,
+    max_widen_factor:         float = _MAX_WIDEN_FACTOR_QUERY,
 ) -> AnalyzeResponse:
     """
     Belirli bir hasta için anomali analizi.
@@ -458,6 +546,9 @@ async def analyze_patient(
     SCALP_DATA_FILE=data.csv uvicorn api:app --reload
     curl "http://localhost:8000/analyze/PATIENT-UUID?window=3&threshold=2.0"
     ```
+
+    `use_time_aware_margin=true` isteniyorsa `hair_type` içeren biyolojik
+    sütunlar zorunlu hale gelir (trend yönü/güveni bu sütunlardan hesaplanır).
     """
     if not _DEFAULT_DATA_FILE:
         raise HTTPException(
@@ -469,11 +560,13 @@ async def analyze_patient(
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Veri dosyası bulunamadı: {_DEFAULT_DATA_FILE}")
 
-    df = _csv_to_df(path.read_bytes())
+    df = _csv_to_df(path.read_bytes(), require_bio=use_time_aware_margin)
     return _run_analysis(
         df, window, threshold, min_pct_margin,
         use_personal_calibration, calibration_size, floor_pct, fallback_pct,
         patient_id=patient_id,
+        use_time_aware_margin=use_time_aware_margin,
+        max_widen_factor=max_widen_factor,
     )
 
 

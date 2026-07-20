@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 
 from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN
-from margin_utils import compute_personal_margin
+from margin_utils import compute_personal_margin, compute_personal_time_sensitivity, gap_adjusted_margin
 
 
 # ─── Sabitler ────────────────────────────────────────────────────────────────
@@ -142,6 +142,10 @@ def detect_anomalies(
     calibration_size: int = 6,
     floor_pct: float = 3.0,
     fallback_pct: float = FALLBACK_MIN_PCT_MARGIN,
+    trend_lookup: dict[tuple[str, str], dict] | None = None,
+    use_time_aware_margin: bool = False,
+    time_sensitivity_min_pairs: int = 4,
+    max_widen_factor: float = 2.0,
 ) -> pd.DataFrame:
     """
     Her (patient_id, region, metric) grubu için:
@@ -209,6 +213,39 @@ def detect_anomalies(
             "insufficient_data"                   — grup toplamı window'dan az, VEYA bu satır ilk seans
                                                      (baseline hiç yok, hiç değerlendirilmedi)
             "no_change"                            — pencere std=0 ve mevcut değer de aynı, z=0.0 kesin
+
+    Zaman-Duyarlı (Time-Aware) Kişisel Marj (opt-in, varsayılan KAPALI):
+        `use_time_aware_margin=True` VE `trend_lookup` verilmişse, her
+        (patient_id, region, metric) için `margin_utils.compute_personal_time_sensitivity`
+        ile hastanın kendi ardışık seans farklarından "gün başına doğal %
+        dalgalanma" öğrenilir ve `margin_utils.gap_adjusted_margin` ile o satırın
+        marjı gevşetilir. Amaç: iki seans arasında 2 hafta mı 8 ay mı geçtiğini
+        hesaba katmak — mevcut sabit-pencere baseline'ı (ANOMALY_WINDOW) bunu
+        hiç ayırt etmiyordu.
+
+        `gap_days` TANIMI: mevcut seans ile BİR ÖNCEKİ seans arasındaki gün farkı
+        (`(session_date[i] - session_date[i-1]).days`) — `window` penceresinin
+        tamamı DEĞİL. Pencere birden fazla geçmiş seansı kapsar ve "ne kadar
+        zaman geçti" sorusunun cevabı değildir; asıl soru "en yakın boşluk ne
+        kadardı" olduğu için sadece bir önceki seansla arasındaki fark kullanılır.
+
+        Trend kirlenmesi koruması: `trend_lookup[(patient_id, region)]` içindeki
+        `direction` "Increasing"/"Decreasing" VE `confidence` "high" ise (yani
+        `analyze_patient_trend` zaten güvenilir, bilinen bir eğilim tespit
+        etmişse), zaman-kalibrasyonu o (patient_id, region) için HİÇ ÇALIŞTIRILMAZ
+        — aksi halde gerçek trend "doğal dalgalanma" sanılıp marj gevşetilerek
+        trend maskelenirdi. Bu durumda source="trend_present_skipped" döner ve
+        marj değişmez. `trend_lookup`'ta o (patient_id, region) anahtarı yoksa
+        trend bilinmiyor sayılır ve zaman-kalibrasyonu normal şekilde çalışır.
+
+        `use_time_aware_margin=False` (varsayılan) iken bu mekanizma HİÇ
+        devreye girmez — geriye dönük uyumluluk için tüm yeni sütunlar
+        None/NaN/False dolu gelir, mevcut sütunlarda hiçbir değer değişmez.
+
+        Yeni sütunlar: {metric}_gap_days, {metric}_time_sensitivity_pct_per_day,
+        {metric}_time_sensitivity_source, {metric}_margin_widened (bool).
+        Aktifken {metric}_margin_used / {metric}_practical_threshold artık o
+        SATIRA özel (gap-ayarlı) efektif marjı taşır — sabit değildir.
     """
     result_frames = []
 
@@ -241,13 +278,51 @@ def detect_anomalies(
                 margin_excluded  = 0
                 calibration_used = 0
 
+            # Zaman-duyarlı marj varsayılan olarak KAPALI: margins_used sabit
+            # metric_margin ile başlar (eski davranışla birebir aynı), gap_days/
+            # time_sensitivity_* sütunları NaN/None/False kalır. Sadece
+            # use_time_aware_margin=True VE trend_lookup verilmişse aşağıdaki
+            # döngüde satır satır doldurulur/gevşetilir.
+            margins_used    = np.full(n, metric_margin, dtype=float)
+            gap_days_arr    = np.full(n, np.nan)
+            ts_rate_arr     = np.full(n, np.nan)
+            ts_source_arr   = np.full(n, None, dtype=object)
+            margin_widened  = np.zeros(n, dtype=bool)
+
             if n < window:
                 directions[:]     = "insufficient_data"
                 decision_rules[:] = "insufficient_data"
             else:
+                time_sensitivity = None
+                if use_time_aware_margin and trend_lookup is not None:
+                    trend_info = trend_lookup.get((pid, region), {})
+                    time_sensitivity = compute_personal_time_sensitivity(
+                        grp, metric,
+                        trend_info.get("direction"), trend_info.get("confidence"),
+                        min_pairs=time_sensitivity_min_pairs,
+                    )
+                session_dates = pd.to_datetime(grp["session_date"]).values
+
                 # İlk seans hiçbir zaman değerlendirilmez (baseline yok)
                 decision_rules[0] = "insufficient_data"
                 for i in range(1, n):
+                    row_margin = metric_margin
+                    if time_sensitivity is not None:
+                        # gap_days: mevcut seans ile BİR ÖNCEKİ seans arasındaki
+                        # gün farkı — `window` penceresinin tamamı değil (bkz. docstring)
+                        gap_days = int((session_dates[i] - session_dates[i - 1]) / np.timedelta64(1, "D"))
+                        adj = gap_adjusted_margin(metric_margin, gap_days, time_sensitivity, max_widen_factor)
+                        row_margin        = adj["effective_margin_pct"]
+                        gap_days_arr[i]   = gap_days
+                        ts_rate_arr[i]    = (
+                            time_sensitivity["time_sensitivity_pct_per_day"]
+                            if time_sensitivity["time_sensitivity_pct_per_day"] is not None
+                            else np.nan
+                        )
+                        ts_source_arr[i]  = time_sensitivity["source"]
+                        margin_widened[i] = adj["widened"]
+                    margins_used[i] = row_margin
+
                     # sabit boyutlu pencere: son `window` seans, mevcut haric
                     window_vals = vals[max(0, i - window):i]
                     if len(window_vals) < 2:
@@ -259,7 +334,7 @@ def detect_anomalies(
                             pct_deviation = abs(vals[i] - m) / m * 100 if m != 0 else 0
                             pct_deviations[i] = round(pct_deviation, 2)
                             decision_rules[i] = "personal_margin_only_low_confidence"
-                            if pct_deviation > metric_margin:
+                            if pct_deviation > row_margin:
                                 anomalies[i]  = True
                                 directions[i] = "high" if vals[i] > m else "low"
                                 severities[i] = "heavy"
@@ -274,7 +349,7 @@ def detect_anomalies(
                         z = (vals[i] - m) / s
                         zs[i] = round(z, 3)
                         decision_rules[i] = "z_score_and_personal_margin"
-                        is_anomaly_final = (abs(z) > threshold) and (pct_deviation > metric_margin)
+                        is_anomaly_final = (abs(z) > threshold) and (pct_deviation > row_margin)
                         if is_anomaly_final:
                             anomalies[i]  = True
                             directions[i] = "high" if z > threshold else "low"
@@ -294,12 +369,12 @@ def detect_anomalies(
                         # pencere birebir ayni (std=0) ama deger farkli ->
                         # z-score tanimsiz; yine de pratik marj sarti araniyor
                         decision_rules[i] = "personal_margin_only_low_confidence"
-                        if pct_deviation > metric_margin:
+                        if pct_deviation > row_margin:
                             anomalies[i]  = True
                             directions[i] = "high" if vals[i] > m else "low"
                             severities[i] = "heavy"
 
-            grp[f"{metric}_margin_used"]              = metric_margin
+            grp[f"{metric}_margin_used"]              = margins_used
             grp[f"{metric}_margin_source"]            = margin_source
             grp[f"{metric}_margin_excluded"]          = margin_excluded
             grp[f"{metric}_calibration_points_used"]  = calibration_used
@@ -312,7 +387,11 @@ def detect_anomalies(
             grp[f"{metric}_severity"]      = severities
             grp[f"{metric}_decision_rule"] = decision_rules
             grp[f"{metric}_statistical_threshold"] = threshold
-            grp[f"{metric}_practical_threshold"]   = metric_margin
+            grp[f"{metric}_practical_threshold"]   = margins_used
+            grp[f"{metric}_gap_days"]                     = gap_days_arr
+            grp[f"{metric}_time_sensitivity_pct_per_day"] = ts_rate_arr
+            grp[f"{metric}_time_sensitivity_source"]      = ts_source_arr
+            grp[f"{metric}_margin_widened"]               = margin_widened
 
         result_frames.append(grp)
 
@@ -329,6 +408,8 @@ def anomaly_row_to_dict(row: pd.Series, metric: str) -> dict:
     margin_used = row.get(f"{metric}_margin_used")
     margin_excluded = row.get(f"{metric}_margin_excluded")
     calibration_used = row.get(f"{metric}_calibration_points_used")
+    gap_days = row.get(f"{metric}_gap_days")
+    ts_rate = row.get(f"{metric}_time_sensitivity_pct_per_day")
     return {
         "patient_id":     row["patient_id"],
         "patient_name":   f"{row['first_name']} {row['last_name']}",
@@ -351,6 +432,10 @@ def anomaly_row_to_dict(row: pd.Series, metric: str) -> dict:
         "margin_excluded": int(margin_excluded) if margin_excluded is not None else None,
         "calibration_points_used": None if calibration_used is None else int(calibration_used),
         "calibration_points_excluded": int(margin_excluded) if margin_excluded is not None else None,
+        "gap_days": None if gap_days is None or pd.isna(gap_days) else int(gap_days),
+        "time_sensitivity_pct_per_day": None if ts_rate is None or pd.isna(ts_rate) else float(ts_rate),
+        "time_sensitivity_source": row.get(f"{metric}_time_sensitivity_source"),
+        "margin_widened": bool(row.get(f"{metric}_margin_widened", False)),
         "algorithm_version": ALGORITHM_VERSION,
     }
 

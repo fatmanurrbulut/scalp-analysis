@@ -198,3 +198,182 @@ def compute_personal_margin(
         "n_calibration_points": int(len(calibration)),
         "calibration_points_excluded": excluded_count,
     }
+
+
+def compute_personal_time_sensitivity(
+    rgrp: pd.DataFrame,
+    metric_col: str,
+    trend_direction: str | None,
+    trend_confidence: str | None,
+    min_pairs: int = 4,
+    contamination_threshold: float = CONTAMINATION_THRESHOLD,
+    contamination_min_pct: float = CONTAMINATION_MIN_PCT,
+) -> dict:
+    """
+    Hastanın KENDİ ardışık seans farklarından, gün başına beklenen doğal
+    % dalgalanmayı öğrenir (gap_adjusted_margin ile birlikte kullanılır).
+
+    Literatürden türetilmiş sabit bir "günde %X" değeri KASITLI olarak
+    kullanılmaz (bkz. proje tasarım kararı) — tamamen hastanın kendi
+    (patient_id, region) geçmişine dayanır.
+
+    Trend kirlenmesi kapısı (ÖNCELİKLE kontrol edilir): hasta yavaş ama
+    gerçek, sürekli bir eğilim yaşıyorsa (trend_direction "Increasing"/
+    "Decreasing" VE trend_confidence "high"), bu gerçek trend "doğal
+    dalgalanma" sanılıp yanlışlıkla öğrenilmemesi için kalibrasyon HİÇ
+    ÇALIŞTIRILMAZ — source="trend_present_skipped" döner ve rgrp hiç
+    okunmaz (n_pairs=0).
+
+    Aksi halde, session_date'e göre sıralanmış ardışık (i-1, i) seans
+    çifti için:
+        gap_days   = (session_date[i] - session_date[i-1]).gün sayısı
+        pct_change = |val[i] - val[i-1]| / val[i-1] * 100
+        ratio      = pct_change / gap_days
+    hesaplanır. gap_days <= 0 (aynı gün tekrarı/bozuk sıralama) veya
+    val[i-1] == 0 olan çiftler atlanır (tanımsız).
+
+    Geçerli çift sayısı `min_pairs`'in altındaysa: source="insufficient_data",
+    time_sensitivity_pct_per_day=None — başka bir varsayılanla DOLDURULMAZ,
+    zamana duyarsız mevcut davranış korunur.
+
+    Kontaminasyon koruması: ratio serisi üzerinde mevcut
+    _detect_internal_outliers() AYNEN kullanılır (yeni bir outlier tespiti
+    yazılmaz). Temizlenmiş (kontaminasyon dışlanmış) nokta sayısı
+    `min_pairs // 2`'nin altına düşerse yine "insufficient_data" ile
+    fallback yapılır (n_pairs/pairs_excluded şeffaflık için yine de döner).
+
+    Yeterli temiz veri varsa ratio'ların MEDYANI alınır (ortalama değil —
+    tek büyük bir sıçramanın etkisini azaltmak için, _detect_internal_outliers
+    ile aynı "tek seferlik sıçramaları es geç" felsefesiyle tutarlı).
+
+    Args:
+        rgrp:            Tek bir (patient_id, region) grubunun tüm satırları,
+                          `session_date` sütunu içermeli (string veya datetime).
+        metric_col:       Zaman-hassasiyeti öğrenilecek metrik sütunu.
+        trend_direction:  analyze_patient_trend çıktısındaki "direction".
+        trend_confidence: analyze_patient_trend çıktısındaki "confidence".
+        min_pairs:        Kalibrasyon için gereken minimum geçerli çift sayısı.
+
+    Returns:
+        {
+            "time_sensitivity_pct_per_day": float | None,
+            "source": "personal_time_calibration" | "insufficient_data"
+                       | "trend_present_skipped",
+            "n_pairs": int,           # bulunan geçerli (gap>0, val[i-1]!=0) çift sayısı
+            "pairs_excluded": int,    # kontaminasyon nedeniyle dışlanan çift sayısı
+        }
+    """
+    if trend_direction in ("Increasing", "Decreasing") and trend_confidence == "high":
+        return {
+            "time_sensitivity_pct_per_day": None,
+            "source": "trend_present_skipped",
+            "n_pairs": 0,
+            "pairs_excluded": 0,
+        }
+
+    ordered = rgrp.sort_values("session_date")
+    dates = pd.to_datetime(ordered["session_date"]).values
+    vals = ordered[metric_col].astype(float).values
+
+    ratios = []
+    for i in range(1, len(vals)):
+        gap_days = int((dates[i] - dates[i - 1]) / np.timedelta64(1, "D"))
+        if gap_days <= 0:
+            continue
+        prev = vals[i - 1]
+        if prev == 0:
+            continue
+        pct_change = abs(vals[i] - prev) / prev * 100
+        ratios.append(pct_change / gap_days)
+
+    n_pairs = len(ratios)
+    if n_pairs < min_pairs:
+        return {
+            "time_sensitivity_pct_per_day": None,
+            "source": "insufficient_data",
+            "n_pairs": n_pairs,
+            "pairs_excluded": 0,
+        }
+
+    ratio_series = pd.Series(ratios)
+    outlier_idx = _detect_internal_outliers(
+        ratio_series, contamination_threshold, contamination_min_pct
+    )
+    excluded_count = len(outlier_idx)
+    clean = ratio_series.drop(outlier_idx)
+
+    if len(clean) < min_pairs // 2:
+        return {
+            "time_sensitivity_pct_per_day": None,
+            "source": "insufficient_data",
+            "n_pairs": n_pairs,
+            "pairs_excluded": excluded_count,
+        }
+
+    rate = float(clean.median())
+    return {
+        "time_sensitivity_pct_per_day": round(rate, 4),
+        "source": "personal_time_calibration",
+        "n_pairs": n_pairs,
+        "pairs_excluded": excluded_count,
+    }
+
+
+def gap_adjusted_margin(
+    base_margin_pct: float,
+    gap_days: int,
+    time_sensitivity: dict,
+    max_widen_factor: float = 2.0,
+) -> dict:
+    """
+    `base_margin_pct`'i (compute_personal_margin'den gelen min_pct_margin)
+    gap_days ve kişisel zaman-hassasiyetine göre gevşetir:
+
+        effective = base_margin_pct + rate * gap_days
+        (rate = time_sensitivity["time_sensitivity_pct_per_day"])
+
+    SABİT TAVAN: effective, base_margin_pct * max_widen_factor'ü asla aşamaz
+    (min() ile sınırlanır) — kişisel oran hatalı/aşırı büyük çıksa bile
+    sistemin gevşetme miktarı kontrolsüz büyüyemez.
+
+    time_sensitivity["time_sensitivity_pct_per_day"] None ise (kaynak ne
+    olursa olsun — insufficient_data veya trend_present_skipped), gevşetme
+    yapılmaz, base_margin_pct aynen döner, widened=False. gap_days <= 0 ise
+    (bozuk/aynı-gün veri) aynı şekilde gevşetme yapılmaz.
+
+    Args:
+        base_margin_pct:  Gevşetilecek taban marj (%).
+        gap_days:         Mevcut seans ile bir önceki seans arasındaki gün farkı.
+        time_sensitivity: compute_personal_time_sensitivity çıktısı.
+        max_widen_factor: effective'in taban marjın kaç katını aşamayacağı.
+
+    Returns:
+        {
+            "effective_margin_pct": float,
+            "widened": bool,
+            "capped": bool,   # tavana çarpıp çarpmadığı
+            "reason": str,    # time_sensitivity["source"] ile aynı
+        }
+    """
+    rate = time_sensitivity.get("time_sensitivity_pct_per_day")
+    reason = time_sensitivity.get("source")
+
+    if rate is None or gap_days <= 0:
+        return {
+            "effective_margin_pct": round(float(base_margin_pct), 1),
+            "widened": False,
+            "capped": False,
+            "reason": reason,
+        }
+
+    cap = base_margin_pct * max_widen_factor
+    effective = base_margin_pct + rate * gap_days
+    capped = effective > cap
+    effective = min(effective, cap)
+
+    return {
+        "effective_margin_pct": round(float(effective), 1),
+        "widened": effective > base_margin_pct,
+        "capped": capped,
+        "reason": reason,
+    }

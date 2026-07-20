@@ -75,14 +75,36 @@ def _analyze(
     calibration_size: int,
     floor_pct: float,
     fallback_pct: float,
+    use_time_aware_margin: bool = False,
+    max_widen_factor: float = 2.0,
 ) -> pd.DataFrame:
     pat = df[df["patient_id"] == pid].copy()
     if pat.empty:
         return pat
+
+    # trend_lookup, scalp_analysis.py trend_analysis.py'yi import etmediği için
+    # (circular import önlemi, bkz. margin_utils.py) burada önceden kurulup
+    # detect_anomalies'e dışarıdan geçirilir. hair_type yoksa (biyolojik
+    # sütunlar eksikse) trend hesaplanamaz — zaman-duyarlı marj sessizce
+    # devre dışı kalır (eski davranışa düşer), hata fırlatılmaz.
+    trend_lookup = None
+    if use_time_aware_margin and "hair_type" in pat.columns:
+        trend_result = analyze_patient_trend(
+            pat, pid,
+            calibration_size=calibration_size, floor_pct=floor_pct, fallback_pct=fallback_pct,
+        )
+        trend_lookup = {
+            (pid, r["region"]): {"direction": r["direction"], "confidence": r["confidence"]}
+            for r in trend_result["regions"]
+        }
+
     return detect_anomalies(
         pat, window=ANOMALY_WINDOW, threshold=threshold,
         use_personal_calibration=True,
         calibration_size=calibration_size, floor_pct=floor_pct, fallback_pct=fallback_pct,
+        trend_lookup=trend_lookup,
+        use_time_aware_margin=use_time_aware_margin,
+        max_widen_factor=max_widen_factor,
     )
 
 
@@ -187,6 +209,24 @@ with st.sidebar:
             min_value=5.0, max_value=30.0, value=FALLBACK_MIN_PCT_MARGIN, step=0.1,
         )
 
+        use_time_aware_margin = st.checkbox(
+            "Zaman-Duyarlı Marj (opt-in)",
+            value=False,
+            help=(
+                "Açıksa, marj hastanın kendi ardışık seans farklarından öğrenilen "
+                "'gün başına doğal % dalgalanma' ile gevşetilir — iki seans arası "
+                "2 hafta mı 8 ay mı geçtiği hesaba katılır. Bilinen, yüksek güvenli "
+                "bir trend (Increasing/Decreasing) varsa o bölge için gevşetme "
+                "yapılmaz (trend maskelenmesin diye)."
+            ),
+        )
+        max_widen_factor = st.slider(
+            "Maks. Gevşetme Katsayısı",
+            min_value=1.0, max_value=5.0, value=2.0, step=0.5,
+            disabled=not use_time_aware_margin,
+            help="Zaman-duyarlı marjın taban marjın kaç katını aşamayacağı (sabit tavan).",
+        )
+
     if selected_pid is None:
         st.info("Devam etmek için bir hasta seçin.")
         st.stop()
@@ -194,7 +234,10 @@ with st.sidebar:
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
-df = _analyze(df_raw, selected_pid, threshold, calibration_size, floor_pct, fallback_pct)
+df = _analyze(
+    df_raw, selected_pid, threshold, calibration_size, floor_pct, fallback_pct,
+    use_time_aware_margin, max_widen_factor,
+)
 clinical_trend = _clinical_trend(df_raw, selected_pid, calibration_size, fallback_pct, calibration_size, floor_pct)
 region_comparison_results = {
     m: _region_comparison(df_raw, selected_pid, m, calibration_size, ANOVA_ALPHA) for m in METRICS

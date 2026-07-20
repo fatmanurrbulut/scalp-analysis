@@ -78,6 +78,44 @@ def test_analyze_csv_and_json_produce_equivalent_results(client):
     assert csv_anomalies == json_anomalies
 
 
+def test_analyze_time_aware_margin_adds_new_fields(client):
+    df = make_df(
+        "P1", "Vertex", dates_from(8, step_days=90),
+        [100, 101, 99, 100, 101, 99, 60, 100],
+        [50, 51, 49, 50, 51, 49, 50, 50],
+        ["Terminal"] * 8,
+    )
+    resp = client.post(
+        "/analyze",
+        params={"use_time_aware_margin": True},
+        files={"file": ("data.csv", df_to_csv_bytes(df), "text/csv")},
+    )
+    assert resp.status_code == 200
+    anomaly = resp.json()["anomalies"][0]
+    assert "gap_days" in anomaly
+    assert "time_sensitivity_source" in anomaly
+    assert "margin_widened" in anomaly
+
+
+def test_analyze_time_aware_margin_requires_bio_columns(client):
+    import pandas as pd
+    df = pd.DataFrame({
+        "patient_id": ["P1"] * 2,
+        "first_name": ["Test"] * 2,
+        "last_name": ["P1"] * 2,
+        "session_date": dates_from(2),
+        "region": ["Vertex"] * 2,
+        "hair_density_hairs_cm2": [100, 101],
+        "hair_thickness_um": [50, 51],
+    })
+    resp = client.post(
+        "/analyze",
+        params={"use_time_aware_margin": True},
+        files={"file": ("data.csv", df_to_csv_bytes(df), "text/csv")},
+    )
+    assert resp.status_code == 422
+
+
 def test_health_and_thresholds_endpoints(client):
     assert client.get("/health").status_code == 200
     assert client.get("/thresholds").status_code == 200
