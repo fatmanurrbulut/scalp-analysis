@@ -145,7 +145,6 @@ def detect_anomalies(
     trend_lookup: dict[tuple[str, str], dict] | None = None,
     use_time_aware_margin: bool = False,
     time_sensitivity_min_pairs: int = 4,
-    max_widen_factor: float = 2.0,
 ) -> pd.DataFrame:
     """
     Her (patient_id, region, metric) grubu için:
@@ -311,7 +310,7 @@ def detect_anomalies(
                         # gap_days: mevcut seans ile BİR ÖNCEKİ seans arasındaki
                         # gün farkı — `window` penceresinin tamamı değil (bkz. docstring)
                         gap_days = int((session_dates[i] - session_dates[i - 1]) / np.timedelta64(1, "D"))
-                        adj = gap_adjusted_margin(metric_margin, gap_days, time_sensitivity, max_widen_factor)
+                        adj = gap_adjusted_margin(metric_margin, gap_days, time_sensitivity)
                         row_margin        = adj["effective_margin_pct"]
                         gap_days_arr[i]   = gap_days
                         ts_rate_arr[i]    = (

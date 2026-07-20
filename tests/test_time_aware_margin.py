@@ -53,6 +53,8 @@ def test_personal_time_calibration_uses_median_ratio():
     assert result["pairs_excluded"] == 0
     # ratios: 3/30, 2.9126/30, 3/30, 2.9126/30 -> medyan ~0.09854
     assert result["time_sensitivity_pct_per_day"] == pytest.approx(0.0985, abs=0.001)
+    # ham % değişimlerin (gap'e bölünmemiş) maksimumu: max(3.0, 2.9126) = 3.0
+    assert result["max_observed_pct_change"] == pytest.approx(3.0, abs=0.001)
 
 
 def test_contamination_protection_excludes_single_spike_from_median():
@@ -67,45 +69,91 @@ def test_contamination_protection_excludes_single_spike_from_median():
     assert result["n_pairs"] == 5
     assert result["pairs_excluded"] == 1
     assert result["time_sensitivity_pct_per_day"] == pytest.approx(0.0985, abs=0.001)
+    # 250'ye sıçramanın ham %150 değişimi de dışlanmalı — aksi halde
+    # max_observed_pct_change 150'ye şişerdi.
+    assert result["max_observed_pct_change"] == pytest.approx(3.0, abs=0.001)
+
+
+def test_max_observed_pct_change_excludes_contaminated_spike():
+    # gap_adjusted_margin() artık gevşetme tavanını max_observed_pct_change'den
+    # alıyor — bu yüzden bu değerin, kontaminasyon dışlanmış (temiz) noktalardan
+    # hesaplandığını AYRICA doğrulamak kritik: aksi halde tek seferlik bir
+    # sıçrama, tavanı yapay olarak şişirip gevşetmeyi kontrolsüz büyütebilirdi.
+    dates = pd.date_range("2026-01-01", periods=6, freq="30D")
+    df = _region_df([100, 103, 100, 103, 100, 250], dates)  # 250: tek seferlik %150 sıçrama
+    result = compute_personal_time_sensitivity(df, "hair_density_hairs_cm2", None, None, min_pairs=4)
+    assert result["pairs_excluded"] == 1
+    assert result["max_observed_pct_change"] < 150.0
+    assert result["max_observed_pct_change"] == pytest.approx(3.0, abs=0.001)
 
 
 # ─── gap_adjusted_margin ─────────────────────────────────────────────────────
 
 def test_gap_adjusted_margin_small_change_for_short_gap():
-    ts = {"time_sensitivity_pct_per_day": 0.05, "source": "personal_time_calibration"}
-    result = gap_adjusted_margin(base_margin_pct=5.0, gap_days=14, time_sensitivity=ts, max_widen_factor=2.0)
+    ts = {
+        "time_sensitivity_pct_per_day": 0.05,
+        "max_observed_pct_change": 20.0,
+        "source": "personal_time_calibration",
+    }
+    result = gap_adjusted_margin(base_margin_pct=5.0, gap_days=14, time_sensitivity=ts)
     assert result["effective_margin_pct"] == pytest.approx(5.7, abs=0.01)
     assert result["widened"] is True
     assert result["capped"] is False
 
 
 def test_gap_adjusted_margin_loosens_more_for_long_gap_same_rate():
-    ts = {"time_sensitivity_pct_per_day": 0.05, "source": "personal_time_calibration"}
-    short = gap_adjusted_margin(5.0, 14, ts, max_widen_factor=5.0)
-    long = gap_adjusted_margin(5.0, 240, ts, max_widen_factor=5.0)
+    ts = {
+        "time_sensitivity_pct_per_day": 0.05,
+        "max_observed_pct_change": 20.0,
+        "source": "personal_time_calibration",
+    }
+    short = gap_adjusted_margin(5.0, 14, ts)
+    long = gap_adjusted_margin(5.0, 240, ts)
     assert long["effective_margin_pct"] > short["effective_margin_pct"]
 
 
 def test_gap_adjusted_margin_not_widened_when_trend_present_skipped():
-    ts = {"time_sensitivity_pct_per_day": None, "source": "trend_present_skipped"}
+    ts = {"time_sensitivity_pct_per_day": None, "max_observed_pct_change": None, "source": "trend_present_skipped"}
     result = gap_adjusted_margin(base_margin_pct=5.0, gap_days=240, time_sensitivity=ts)
     assert result["effective_margin_pct"] == 5.0
     assert result["widened"] is False
+    assert result["capped"] is False
+    assert result["cap_source"] is None
     assert result["reason"] == "trend_present_skipped"
 
 
 def test_gap_adjusted_margin_not_widened_when_insufficient_data():
-    ts = {"time_sensitivity_pct_per_day": None, "source": "insufficient_data"}
+    ts = {"time_sensitivity_pct_per_day": None, "max_observed_pct_change": None, "source": "insufficient_data"}
     result = gap_adjusted_margin(base_margin_pct=5.0, gap_days=240, time_sensitivity=ts)
     assert result["effective_margin_pct"] == 5.0
     assert result["widened"] is False
 
 
-def test_gap_adjusted_margin_respects_max_widen_factor_cap():
-    ts = {"time_sensitivity_pct_per_day": 10.0, "source": "personal_time_calibration"}  # aşırı yüksek kişisel oran
-    result = gap_adjusted_margin(base_margin_pct=5.0, gap_days=100, time_sensitivity=ts, max_widen_factor=2.0)
+def test_gap_adjusted_margin_respects_max_observed_pct_change_cap():
+    # Aşırı yüksek kişisel oran (10.0 %/gün) — hastanın kendi temiz geçmişinde
+    # gözlenen en büyük değişim (max_observed_pct_change=15.0) tavan olarak
+    # devreye girmeli, keyfi bir çarpan değil.
+    ts = {
+        "time_sensitivity_pct_per_day": 10.0,
+        "max_observed_pct_change": 15.0,
+        "source": "personal_time_calibration",
+    }
+    result = gap_adjusted_margin(base_margin_pct=5.0, gap_days=100, time_sensitivity=ts)
     assert result["capped"] is True
-    assert result["effective_margin_pct"] == 10.0  # 5.0 * 2.0 tavanı
+    assert result["cap_source"] == "patient_max_observed_change"
+    assert result["effective_margin_pct"] == pytest.approx(20.0, abs=0.01)  # 5.0 + 15.0 tavanı
+
+
+def test_gap_adjusted_margin_defensive_branch_warns_when_cap_missing():
+    # Teorik olarak oluşmaması gereken durum: rate mevcut ama
+    # max_observed_pct_change None. Savunma amaçlı — tavansız uygulanır ve
+    # bir uyarı loglanır, sessizce geçilmez.
+    ts = {"time_sensitivity_pct_per_day": 0.1, "max_observed_pct_change": None, "source": "personal_time_calibration"}
+    with pytest.warns(UserWarning):
+        result = gap_adjusted_margin(base_margin_pct=5.0, gap_days=50, time_sensitivity=ts)
+    assert result["cap_source"] == "none_available"
+    assert result["capped"] is False
+    assert result["effective_margin_pct"] == pytest.approx(10.0, abs=0.01)  # 5.0 + 0.1*50, tavansız
 
 
 # ─── detect_anomalies entegrasyonu ──────────────────────────────────────────

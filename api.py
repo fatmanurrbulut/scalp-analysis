@@ -247,13 +247,6 @@ _USE_TIME_AWARE_MARGIN_QUERY = Query(
         "geriye dönük uyumluluk için kapalı."
     ),
 )
-_MAX_WIDEN_FACTOR_QUERY = Query(
-    default=2.0, ge=1.0, le=10.0,
-    description=(
-        "use_time_aware_margin=true iken, gevşetilmiş marjın taban marjın kaç "
-        "katını aşamayacağı (sabit tavan). Varsayılan: 2.0."
-    ),
-)
 _REGION_METRIC_QUERY = Query(
     default="hair_density_hairs_cm2",
     description=f"Karşılaştırılacak metrik. Seçenekler: {', '.join(METRICS)}",
@@ -380,7 +373,6 @@ def _run_analysis(
     fallback_pct: float = ANOMALY_MIN_PCT_MARGIN,
     patient_id: str | None = None,
     use_time_aware_margin: bool = False,
-    max_widen_factor: float = 2.0,
 ) -> AnalyzeResponse:
     if patient_id:
         df = df[df["patient_id"] == patient_id]
@@ -405,7 +397,6 @@ def _run_analysis(
         use_personal_calibration, calibration_size, floor_pct, fallback_pct,
         trend_lookup=trend_lookup,
         use_time_aware_margin=use_time_aware_margin,
-        max_widen_factor=max_widen_factor,
     )
     anomalies = _extract_anomalies(df)
     return _build_response(
@@ -484,7 +475,6 @@ async def analyze(
     floor_pct:                float = _FLOOR_PCT_QUERY,
     fallback_pct:             float = _FALLBACK_PCT_QUERY,
     use_time_aware_margin:    bool  = _USE_TIME_AWARE_MARGIN_QUERY,
-    max_widen_factor:         float = _MAX_WIDEN_FACTOR_QUERY,
 ) -> AnalyzeResponse:
     """
     İki içerik türü desteklenir:
@@ -515,7 +505,6 @@ async def analyze(
         df, window, threshold, min_pct_margin, use_personal_calibration,
         calibration_size, floor_pct, fallback_pct,
         use_time_aware_margin=use_time_aware_margin,
-        max_widen_factor=max_widen_factor,
     )
 
 
@@ -535,7 +524,6 @@ async def analyze_patient(
     floor_pct:                float = _FLOOR_PCT_QUERY,
     fallback_pct:             float = _FALLBACK_PCT_QUERY,
     use_time_aware_margin:    bool  = _USE_TIME_AWARE_MARGIN_QUERY,
-    max_widen_factor:         float = _MAX_WIDEN_FACTOR_QUERY,
 ) -> AnalyzeResponse:
     """
     Belirli bir hasta için anomali analizi.
@@ -566,7 +554,6 @@ async def analyze_patient(
         use_personal_calibration, calibration_size, floor_pct, fallback_pct,
         patient_id=patient_id,
         use_time_aware_margin=use_time_aware_margin,
-        max_widen_factor=max_widen_factor,
     )
 
 

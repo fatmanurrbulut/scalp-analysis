@@ -9,6 +9,8 @@ etmesin diye) bu ortak fonksiyon ayrı bir modülde tutulur.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -246,6 +248,13 @@ def compute_personal_time_sensitivity(
     tek büyük bir sıçramanın etkisini azaltmak için, _detect_internal_outliers
     ile aynı "tek seferlik sıçramaları es geç" felsefesiyle tutarlı).
 
+    Ayrıca, aynı kontaminasyon filtresinden geçmiş (temiz) noktalara karşılık
+    gelen HAM % değişimlerin (gap_days'e bölünmemiş, ratio'nun aksine)
+    MAKSİMUMU da hesaplanıp döndürülür (`max_observed_pct_change`) — bu,
+    gap_adjusted_margin()'de gevşetmenin tavanı olarak kullanılır: keyfi bir
+    dışarıdan sabit yerine, hastanın kendi temiz geçmişinde fiilen gözlenen
+    en büyük meşru değişim baz alınır.
+
     Args:
         rgrp:            Tek bir (patient_id, region) grubunun tüm satırları,
                           `session_date` sütunu içermeli (string veya datetime).
@@ -257,6 +266,7 @@ def compute_personal_time_sensitivity(
     Returns:
         {
             "time_sensitivity_pct_per_day": float | None,
+            "max_observed_pct_change": float | None,  # source != "personal_time_calibration" ise None
             "source": "personal_time_calibration" | "insufficient_data"
                        | "trend_present_skipped",
             "n_pairs": int,           # bulunan geçerli (gap>0, val[i-1]!=0) çift sayısı
@@ -266,6 +276,7 @@ def compute_personal_time_sensitivity(
     if trend_direction in ("Increasing", "Decreasing") and trend_confidence == "high":
         return {
             "time_sensitivity_pct_per_day": None,
+            "max_observed_pct_change": None,
             "source": "trend_present_skipped",
             "n_pairs": 0,
             "pairs_excluded": 0,
@@ -276,6 +287,7 @@ def compute_personal_time_sensitivity(
     vals = ordered[metric_col].astype(float).values
 
     ratios = []
+    pct_changes = []
     for i in range(1, len(vals)):
         gap_days = int((dates[i] - dates[i - 1]) / np.timedelta64(1, "D"))
         if gap_days <= 0:
@@ -285,34 +297,43 @@ def compute_personal_time_sensitivity(
             continue
         pct_change = abs(vals[i] - prev) / prev * 100
         ratios.append(pct_change / gap_days)
+        pct_changes.append(pct_change)
 
     n_pairs = len(ratios)
     if n_pairs < min_pairs:
         return {
             "time_sensitivity_pct_per_day": None,
+            "max_observed_pct_change": None,
             "source": "insufficient_data",
             "n_pairs": n_pairs,
             "pairs_excluded": 0,
         }
 
+    # ratio_series ve pct_change_series AYNI (varsayılan RangeIndex) index'i
+    # paylaşır — outlier_idx ikisine de tutarlı şekilde uygulanabilsin diye.
     ratio_series = pd.Series(ratios)
+    pct_change_series = pd.Series(pct_changes)
     outlier_idx = _detect_internal_outliers(
         ratio_series, contamination_threshold, contamination_min_pct
     )
     excluded_count = len(outlier_idx)
-    clean = ratio_series.drop(outlier_idx)
+    clean_ratios = ratio_series.drop(outlier_idx)
+    clean_pct_changes = pct_change_series.drop(outlier_idx)
 
-    if len(clean) < min_pairs // 2:
+    if len(clean_ratios) < min_pairs // 2:
         return {
             "time_sensitivity_pct_per_day": None,
+            "max_observed_pct_change": None,
             "source": "insufficient_data",
             "n_pairs": n_pairs,
             "pairs_excluded": excluded_count,
         }
 
-    rate = float(clean.median())
+    rate = float(clean_ratios.median())
+    max_observed = float(clean_pct_changes.max())
     return {
         "time_sensitivity_pct_per_day": round(rate, 4),
+        "max_observed_pct_change": round(max_observed, 4),
         "source": "personal_time_calibration",
         "n_pairs": n_pairs,
         "pairs_excluded": excluded_count,
@@ -323,36 +344,44 @@ def gap_adjusted_margin(
     base_margin_pct: float,
     gap_days: int,
     time_sensitivity: dict,
-    max_widen_factor: float = 2.0,
 ) -> dict:
     """
     `base_margin_pct`'i (compute_personal_margin'den gelen min_pct_margin)
     gap_days ve kişisel zaman-hassasiyetine göre gevşetir:
 
-        effective = base_margin_pct + rate * gap_days
-        (rate = time_sensitivity["time_sensitivity_pct_per_day"])
+        effective_margin_pct = base_margin_pct + min(rate * gap_days, cap)
+        (rate = time_sensitivity["time_sensitivity_pct_per_day"]
+         cap  = time_sensitivity["max_observed_pct_change"])
 
-    SABİT TAVAN: effective, base_margin_pct * max_widen_factor'ü asla aşamaz
-    (min() ile sınırlanır) — kişisel oran hatalı/aşırı büyük çıksa bile
-    sistemin gevşetme miktarı kontrolsüz büyüyemez.
+    TAVAN VERİDEN GELİR, KEYFİ DEĞİL: `cap`, hastanın kendi kontaminasyon-
+    filtrelenmiş geçmişinde fiilen gözlenen en büyük % değişimdir (bkz.
+    compute_personal_time_sensitivity). Dışarıdan seçilmiş sabit bir çarpan
+    yerine kullanılır — kişisel oran hatalı/aşırı büyük çıksa bile sistem,
+    verinin kendisinin göstermediği bir büyüklüğe ekstrapolasyon yapmaz.
 
     time_sensitivity["time_sensitivity_pct_per_day"] None ise (kaynak ne
     olursa olsun — insufficient_data veya trend_present_skipped), gevşetme
     yapılmaz, base_margin_pct aynen döner, widened=False. gap_days <= 0 ise
     (bozuk/aynı-gün veri) aynı şekilde gevşetme yapılmaz.
 
+    Savunma amaçlı: rate mevcutken cap (`max_observed_pct_change`) None
+    gelirse — teorik olarak compute_personal_time_sensitivity'nin
+    "personal_time_calibration" kaynağıyla birlikte hep dolu dönmesi
+    gerektiğinden normalde oluşmamalı — gevşetme tavansız uygulanır ve
+    `cap_source="none_available"` ile işaretlenir, ayrıca bir uyarı loglanır.
+
     Args:
         base_margin_pct:  Gevşetilecek taban marj (%).
         gap_days:         Mevcut seans ile bir önceki seans arasındaki gün farkı.
         time_sensitivity: compute_personal_time_sensitivity çıktısı.
-        max_widen_factor: effective'in taban marjın kaç katını aşamayacağı.
 
     Returns:
         {
             "effective_margin_pct": float,
             "widened": bool,
-            "capped": bool,   # tavana çarpıp çarpmadığı
-            "reason": str,    # time_sensitivity["source"] ile aynı
+            "capped": bool,        # rate*gap_days, cap'i aştı mı
+            "cap_source": "patient_max_observed_change" | "none_available" | None,
+            "reason": str,         # time_sensitivity["source"] ile aynı
         }
     """
     rate = time_sensitivity.get("time_sensitivity_pct_per_day")
@@ -363,17 +392,35 @@ def gap_adjusted_margin(
             "effective_margin_pct": round(float(base_margin_pct), 1),
             "widened": False,
             "capped": False,
+            "cap_source": None,
             "reason": reason,
         }
 
-    cap = base_margin_pct * max_widen_factor
-    effective = base_margin_pct + rate * gap_days
-    capped = effective > cap
-    effective = min(effective, cap)
+    cap = time_sensitivity.get("max_observed_pct_change")
+    raw_widen = rate * gap_days
+
+    if cap is not None:
+        widen_amount = min(raw_widen, cap)
+        capped = raw_widen > cap
+        cap_source = "patient_max_observed_change"
+    else:
+        warnings.warn(
+            "gap_adjusted_margin: time_sensitivity_pct_per_day mevcut ama "
+            "max_observed_pct_change None — compute_personal_time_sensitivity "
+            "'personal_time_calibration' kaynağıyla bu alanı her zaman doldurmalı; "
+            "gevşetme tavansız uygulanıyor.",
+            stacklevel=2,
+        )
+        widen_amount = raw_widen
+        capped = False
+        cap_source = "none_available"
+
+    effective = base_margin_pct + widen_amount
 
     return {
         "effective_margin_pct": round(float(effective), 1),
         "widened": effective > base_margin_pct,
         "capped": capped,
+        "cap_source": cap_source,
         "reason": reason,
     }

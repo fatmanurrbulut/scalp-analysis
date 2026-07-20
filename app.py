@@ -9,7 +9,7 @@ import streamlit as st
 from clinical_thresholds import FALLBACK_MIN_PCT_MARGIN, get_all_thresholds
 from data_validation import DataValidationError, validate_and_prepare
 from region_comparison import analyze_region_comparison
-from scalp_analysis import ANOMALY_WINDOW, detect_anomalies
+from scalp_analysis import ANOMALY_THRESHOLD, ANOMALY_WINDOW, detect_anomalies
 from trend_analysis import analyze_patient_trend
 
 st.set_page_config(
@@ -76,7 +76,6 @@ def _analyze(
     floor_pct: float,
     fallback_pct: float,
     use_time_aware_margin: bool = False,
-    max_widen_factor: float = 2.0,
 ) -> pd.DataFrame:
     pat = df[df["patient_id"] == pid].copy()
     if pat.empty:
@@ -104,7 +103,6 @@ def _analyze(
         calibration_size=calibration_size, floor_pct=floor_pct, fallback_pct=fallback_pct,
         trend_lookup=trend_lookup,
         use_time_aware_margin=use_time_aware_margin,
-        max_widen_factor=max_widen_factor,
     )
 
 
@@ -182,10 +180,9 @@ with st.sidebar:
         placeholder="Bir hasta seçin",
     )
 
-    threshold = st.slider(
-        "Outlier Eşiği (std)",
-        min_value=1.0, max_value=4.0, value=2.0, step=0.1,
-    )
+    # Outlier eşiği artık kullanıcıya açık bir kontrol değil — backend sabiti
+    # (scalp_analysis.ANOMALY_THRESHOLD) doğrudan kullanılır.
+    threshold = ANOMALY_THRESHOLD
 
     with st.expander("Gelişmiş Ayarlar"):
         calibration_size = st.slider(
@@ -213,12 +210,10 @@ with st.sidebar:
     # İki seans arası 2 hafta mı 8 ay mı geçtiği her zaman hesaba katılır;
     # bilinen, yüksek güvenli bir trend (Increasing/Decreasing) varsa o bölge
     # için gevşetme otomatik olarak yapılmaz (trend maskelenmesin diye).
+    # Gevşetmenin tavanı da artık keyfi bir sabit değil — hastanın kendi temiz
+    # geçmişinde gözlenen en büyük değişimden türetiliyor (bkz. margin_utils.
+    # compute_personal_time_sensitivity'nin max_observed_pct_change alanı).
     use_time_aware_margin = True
-    max_widen_factor = st.slider(
-        "Maks. Gevşetme Katsayısı",
-        min_value=1.0, max_value=5.0, value=2.0, step=0.5,
-        help="Zaman-duyarlı marjın taban marjın kaç katını aşamayacağı (sabit tavan).",
-    )
 
     if selected_pid is None:
         st.info("Devam etmek için bir hasta seçin.")
@@ -229,7 +224,7 @@ with st.sidebar:
 
 df = _analyze(
     df_raw, selected_pid, threshold, calibration_size, floor_pct, fallback_pct,
-    use_time_aware_margin, max_widen_factor,
+    use_time_aware_margin,
 )
 clinical_trend = _clinical_trend(df_raw, selected_pid, calibration_size, fallback_pct, calibration_size, floor_pct)
 region_comparison_results = {
