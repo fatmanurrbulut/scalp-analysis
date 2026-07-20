@@ -209,21 +209,14 @@ with st.sidebar:
             min_value=5.0, max_value=30.0, value=FALLBACK_MIN_PCT_MARGIN, step=0.1,
         )
 
-    use_time_aware_margin = st.checkbox(
-        "Zaman-Duyarlı Marj",
-        value=True,
-        help=(
-            "Açıksa, marj hastanın kendi ardışık seans farklarından öğrenilen "
-            "'gün başına doğal % dalgalanma' ile gevşetilir — iki seans arası "
-            "2 hafta mı 8 ay mı geçtiği hesaba katılır. Bilinen, yüksek güvenli "
-            "bir trend (Increasing/Decreasing) varsa o bölge için gevşetme "
-            "yapılmaz (trend maskelenmesin diye)."
-        ),
-    )
+    # Zaman-Duyarlı Marj her zaman açık — kullanıcı tarafından kapatılamaz.
+    # İki seans arası 2 hafta mı 8 ay mı geçtiği her zaman hesaba katılır;
+    # bilinen, yüksek güvenli bir trend (Increasing/Decreasing) varsa o bölge
+    # için gevşetme otomatik olarak yapılmaz (trend maskelenmesin diye).
+    use_time_aware_margin = True
     max_widen_factor = st.slider(
         "Maks. Gevşetme Katsayısı",
         min_value=1.0, max_value=5.0, value=2.0, step=0.5,
-        disabled=not use_time_aware_margin,
         help="Zaman-duyarlı marjın taban marjın kaç katını aşamayacağı (sabit tavan).",
     )
 
