@@ -211,6 +211,7 @@ devre dışı kalır, tüm gruplar için sabit `min_pct_margin` kullanılır.
 | `floor_pct` | `3.0` | Kişisel CV%'nin düşemeyeceği taban marj |
 | `fallback_pct` | `10.7` | Kişisel kalibrasyon için yeterli/temiz veri yokken kullanılan AGA fallback % marjı (yalnızca `use_personal_calibration=true` iken etkilidir) |
 | `min_pct_margin` | `10.7` | Yalnızca `use_personal_calibration=false` iken kullanılan sabit marj |
+| `use_time_aware_margin` | `false` | Opt-in — açıksa marj, gün farkına göre kişisel olarak gevşer. Bkz. [Zaman-Duyarlı (Time-Aware) Kişisel Marj](#zaman-duyarlı-time-aware-kişisel-marj) |
 
 Toplam seans sayısı `window`'dan az olan (hasta, bölge) grupları için
 `direction="insufficient_data"` döner, anomali hesaplanmaz.
@@ -260,6 +261,96 @@ sadece o kararın **hangi yoldan** verildiğini açıkça etiketler:
 
 Bu alan mevcut karar mantığını **değiştirmez**, sadece şeffaflaştırır — aynı
 `\|z\| > threshold` VE `pct_deviation > marj` kuralı hâlâ geçerlidir.
+
+---
+
+### Zaman-Duyarlı (Time-Aware) Kişisel Marj
+
+Yukarıdaki `margin`, kalibrasyon dönemindeki CV%'den geliyor ama **iki seans
+arasında gerçekte kaç gün geçtiğini hiç hesaba katmıyordu** — 2 hafta arayla
+gelen bir hastayla 8 ay arayla gelen bir hasta aynı istatistiksel eşikle
+değerlendiriliyordu. Uzun boşluklarda gözlenen bir fark aslında normal
+olabilir, ama sistem bunu kısa boşluktaki bir anomaliyle aynı ciddiyette
+işaretliyordu.
+
+Bu, `use_time_aware_margin=True` ile (API'de opt-in, varsayılan `false`;
+dashboard'da her zaman açık — aşağıya bkz.) devreye giren iki adımlı bir
+mekanizmayla ele alınır:
+
+**1. Kişisel zaman-hassasiyeti öğrenme (`margin_utils.compute_personal_time_sensitivity`)**
+
+Hastanın **kendi** ardışık seans farklarından, gün başına beklenen doğal
+% dalgalanma öğrenilir — literatürden türetilmiş sabit bir "günde %X" değeri
+KASITLI olarak kullanılmaz, tamamen kişisel kalibrasyona dayanır:
+
+```
+gap_days   = (session_date[i] - session_date[i-1]).gün sayısı
+pct_change = |val[i] - val[i-1]| / val[i-1] × 100
+ratio      = pct_change / gap_days
+rate       = ratio'ların MEDYANI   (ortalama değil — tek büyük sıçramaya
+                                     dayanıklı olsun diye)
+```
+
+**Trend kirlenmesi koruması (ÖNCELİKLE kontrol edilir):** hasta yavaş ama
+gerçek, sürekli bir eğilim yaşıyorsa (`trend_analysis`'ın `direction`
+"Increasing"/"Decreasing" VE `confidence="high"` dediği bölgeler), bu gerçek
+trend "doğal dalgalanma" sanılıp yanlışlıkla öğrenilmesin diye kalibrasyon
+**hiç çalıştırılmaz** — `source="trend_present_skipped"` döner, marj
+gevşetilmez.
+
+Kontaminasyon koruması, mevcut `_detect_internal_outliers()` (leave-one-out
+z-score + pratik % eşik) AYNEN kullanılarak sağlanır — ratio serisindeki tek
+seferlik bir sıçrama (örn. ölçüm hatası) medyanı şişirmesin diye dışlanır.
+Geçerli çift sayısı `min_pairs`'in (varsayılan `4`) altındaysa veya
+kontaminasyon sonrası temiz nokta sayısı yetersiz kalırsa
+`source="insufficient_data"` döner, zamana duyarsız mevcut davranış korunur.
+
+**2. Gevşetme + veriden türetilmiş tavan (`margin_utils.gap_adjusted_margin`)**
+
+```
+effective_margin_pct = base_margin_pct + min(rate × gap_days, cap)
+cap = max_observed_pct_change   (hastanın kendi TEMİZ geçmişinde gözlenen
+                                  en büyük ham % değişim)
+```
+
+Tavan **keyfi bir sabit çarpan değildir** — hastanın kendi kontaminasyon-
+filtrelenmiş geçmişinde fiilen gözlenen en büyük meşru değişimdir; sistem
+verinin kendisinin hiç göstermediği bir büyüklüğe ekstrapolasyon yapmaz.
+`rate` `None` ise (kaynak ne olursa olsun — `insufficient_data` veya
+`trend_present_skipped`) gevşetme hiç yapılmaz, `base_margin_pct` aynen kalır.
+
+**Yeni çıktı sütunları** (`detect_anomalies` DataFrame'i ve `/analyze` JSON'ı,
+her metrik için `{metric}_` önekiyle):
+
+| Alan | Açıklama |
+|---|---|
+| `gap_days` | Mevcut seans ile bir önceki seans arasındaki gün farkı |
+| `time_sensitivity_pct_per_day` | Öğrenilen kişisel gün-başına % dalgalanma oranı |
+| `time_sensitivity_source` | `personal_time_calibration` / `insufficient_data` / `trend_present_skipped` |
+| `margin_widened` | Bu satırda marj gerçekten gevşetildi mi (bool) |
+
+`use_time_aware_margin=False` (API varsayılanı) iken bu sütunlar tamamen
+`None`/`NaN`/`False` gelir, mevcut hiçbir davranış değişmez — geriye dönük
+uyumluluk garantilidir.
+
+**API:** `/analyze` ve `/analyze/{patient_id}` endpoint'lerinde
+`use_time_aware_margin` query parametresi (varsayılan `false`) ile açılır;
+açıldığında `hair_type` içeren biyolojik sütunlar zorunlu hale gelir (trend
+yönü/güveni bu sütunlardan hesaplanır, aksi halde `422` döner).
+
+**Dashboard (`app.py`):** Bu mekanizma her zaman **açık** — kullanıcıya
+kapatma seçeneği verilmiyor (bilinçli bir tasarım kararı). Outlier eşiği
+(`ANOMALY_THRESHOLD`) de artık sabit bir backend değeri; sidebar'da yalnızca
+CSV yükleme, hasta seçimi ve "Gelişmiş Ayarlar" (kalibrasyon seansı, taban
+marj, AGA fallback) kontrolleri kalıyor.
+
+**Mimari kısıtlama:** `scalp_analysis.py` ve `trend_analysis.py` birbirini
+import etmez (circular import önlemi, bkz. `margin_utils.py` docstring'i).
+Bu yüzden `detect_anomalies()` trend bilgisine ihtiyaç duyduğunda kendi
+hesaplamaz — çağıran taraf (`api.py::_build_trend_lookup`, `app.py::_analyze`)
+önce `analyze_patient_trend()`'i çalıştırıp sonucu `(patient_id, region) ->
+{"direction", "confidence"}` şeklinde bir `trend_lookup` sözlüğü olarak
+`detect_anomalies()`'e parametre geçirir.
 
 ---
 
@@ -475,9 +566,10 @@ pytest tests/test_anomaly_detection.py -v    # tek dosya
 ```
 
 Test paketi (`tests/`): `test_data_validation.py`, `test_margin_utils.py`,
-`test_anomaly_detection.py`, `test_trend_analysis.py`, `test_region_comparison.py`,
-`test_api_analyze.py`, `test_api_trend.py`, `test_benchmark.py`. FastAPI endpoint
-testleri `fastapi.testclient.TestClient` (`httpx` üzerinden) kullanır.
+`test_time_aware_margin.py`, `test_anomaly_detection.py`, `test_trend_analysis.py`,
+`test_region_comparison.py`, `test_api_analyze.py`, `test_api_trend.py`,
+`test_benchmark.py`. FastAPI endpoint testleri `fastapi.testclient.TestClient`
+(`httpx` üzerinden) kullanır.
 
 ---
 
