@@ -163,6 +163,17 @@ with st.sidebar:
             st.error(f"- **{issue['type']}** (`{issue['column']}`) — {location}")
         st.stop()
 
+    # Test Modu'nun "çalışma kopyası" — df_raw'a HİÇ dokunulmaz, tüm düzenlemeler
+    # bu kopya üzerinde yapılır. Yeni bir dosya yüklendiğinde (ad+boyut değişirse)
+    # kopya otomatik sıfırlanır.
+    uploaded_file_id = f"{uploaded.name}:{uploaded.size}"
+    if (
+        "working_df" not in st.session_state
+        or st.session_state.get("working_df_source") != uploaded_file_id
+    ):
+        st.session_state["working_df"] = df_raw.copy()
+        st.session_state["working_df_source"] = uploaded_file_id
+
     patient_map: dict[str, str] = (
         df_raw[["patient_id", "first_name", "last_name"]]
         .drop_duplicates("patient_id")
@@ -220,15 +231,128 @@ with st.sidebar:
         st.stop()
 
 
+# ── Test Modu ─────────────────────────────────────────────────────────────────
+# Test aşamasında küçük senaryo denemeleri için, yüklenen CSV'ye HİÇ dokunmadan
+# seçili hasta + bölge için seans verilerini arayüzden düzenleme imkânı.
+# Uygulamanın geri kalanı artık df_raw değil, aşağıda türetilen working_df
+# üzerinden çalışır (bkz. dosyanın sonundaki _analyze/_clinical_trend/
+# _region_comparison çağrıları).
+
+st.subheader("🧪 Test Modu — Veriyi Düzenle")
+st.caption(
+    "Buradaki değişiklikler sadece bu oturumda geçerlidir, yüklediğiniz CSV "
+    "dosyasını değiştirmez."
+)
+
+with st.expander("Seans verilerini düzenle", expanded=False):
+    _patient_wdf = st.session_state["working_df"]
+    _test_mode_regions = sorted(
+        _patient_wdf.loc[_patient_wdf["patient_id"] == selected_pid, "region"].unique()
+    )
+
+    if not _test_mode_regions:
+        st.warning("Bu hasta için düzenlenecek seans verisi yok.")
+    else:
+        test_mode_region = st.selectbox(
+            "Bölge (Test Modu)", options=_test_mode_regions, key="test_mode_region",
+        )
+
+        _mask = (
+            (_patient_wdf["patient_id"] == selected_pid)
+            & (_patient_wdf["region"] == test_mode_region)
+        )
+
+        # patient_id/first_name/last_name/region o an sabit/filtrelenmiş olduğu
+        # için tabloya dahil edilmez; session_no türetilmiş bir sütun olduğu
+        # için (aşağıda validate_and_prepare tarafından baştan hesaplanır) o da
+        # gösterilmez. Diğer tüm sütunlar (örn. hair_type) salt-okunur gösterilir
+        # — böylece düzenlenmeyen satırlarda bu değerler kaybolmaz.
+        _EDITABLE_COLS = ["session_date", "hair_density_hairs_cm2", "hair_thickness_um"]
+        _HIDDEN_COLS = {"patient_id", "first_name", "last_name", "region", "session_no"}
+        _display_cols = _EDITABLE_COLS + [
+            c for c in _patient_wdf.columns if c not in _HIDDEN_COLS and c not in _EDITABLE_COLS
+        ]
+
+        editable_slice = (
+            _patient_wdf.loc[_mask, _display_cols]
+            .sort_values("session_date")
+            .reset_index(drop=True)
+        )
+
+        _column_config = {
+            "session_date": st.column_config.DateColumn("Seans Tarihi", required=True),
+            "hair_density_hairs_cm2": st.column_config.NumberColumn(
+                "Yoğunluk (hair/cm²)", min_value=0.0, step=0.1,
+            ),
+            "hair_thickness_um": st.column_config.NumberColumn(
+                "Kalınlık (µm)", min_value=0.0, step=0.1,
+            ),
+        }
+        for _col in _display_cols:
+            if _col not in _EDITABLE_COLS:
+                _column_config[_col] = st.column_config.Column(disabled=True)
+
+        _editor_key = f"editor_{selected_pid}_{test_mode_region}"
+        edited = st.data_editor(
+            editable_slice,
+            num_rows="dynamic",
+            key=_editor_key,
+            column_config=_column_config,
+        )
+
+        if not edited.equals(editable_slice):
+            _const_vals = _patient_wdf.loc[_mask, ["patient_id", "first_name", "last_name", "region"]].iloc[0]
+            _new_slice = edited.copy()
+            for _col, _val in _const_vals.items():
+                _new_slice[_col] = _val
+
+            _candidate = pd.concat([_patient_wdf.loc[~_mask], _new_slice], ignore_index=True)
+            try:
+                st.session_state["working_df"] = validate_and_prepare(_candidate, require_bio=False)
+            except DataValidationError as exc:
+                st.error("Düzenleme geçersiz, uygulanmadı:")
+                for issue in exc.issues:
+                    location = f"{len(issue['row_indices'])} satır" if issue["row_indices"] else "dosya geneli"
+                    st.error(f"- **{issue['type']}** (`{issue['column']}`) — {location}")
+
+        _col_a, _col_b, _col_c = st.columns(3)
+
+        if _col_a.button("Bu hasta+bölge için orijinale dön"):
+            _current = st.session_state["working_df"]
+            _current_mask = (_current["patient_id"] == selected_pid) & (_current["region"] == test_mode_region)
+            _orig_mask = (df_raw["patient_id"] == selected_pid) & (df_raw["region"] == test_mode_region)
+            st.session_state["working_df"] = pd.concat(
+                [_current[~_current_mask], df_raw[_orig_mask]], ignore_index=True,
+            )
+            st.session_state.pop(_editor_key, None)
+            st.rerun()
+
+        if _col_b.button("Tüm değişiklikleri sıfırla"):
+            st.session_state["working_df"] = df_raw.copy()
+            st.session_state.pop(_editor_key, None)
+            st.rerun()
+
+        _col_c.download_button(
+            "Düzenlenmiş veriyi CSV indir",
+            data=st.session_state["working_df"].to_csv(index=False).encode("utf-8"),
+            file_name="duzenlenmis_veri.csv",
+            mime="text/csv",
+        )
+
+working_df = st.session_state["working_df"]
+
+st.divider()
+
+
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
 df = _analyze(
-    df_raw, selected_pid, threshold, calibration_size, floor_pct, fallback_pct,
+    working_df, selected_pid, threshold, calibration_size, floor_pct, fallback_pct,
     use_time_aware_margin,
 )
-clinical_trend = _clinical_trend(df_raw, selected_pid, calibration_size, fallback_pct, calibration_size, floor_pct)
+clinical_trend = _clinical_trend(working_df, selected_pid, calibration_size, fallback_pct, calibration_size, floor_pct)
 region_comparison_results = {
-    m: _region_comparison(df_raw, selected_pid, m, calibration_size, ANOVA_ALPHA) for m in METRICS
+    m: _region_comparison(working_df, selected_pid, m, calibration_size, ANOVA_ALPHA) for m in METRICS
 }
 
 # Session dates that have at least one anomaly (any region, any metric)
