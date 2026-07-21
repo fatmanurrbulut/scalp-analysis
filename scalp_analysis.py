@@ -299,6 +299,7 @@ def detect_anomalies(
                         grp, metric,
                         trend_info.get("direction"), trend_info.get("confidence"),
                         min_pairs=time_sensitivity_min_pairs,
+                        calibration_size=calibration_size,
                     )
                 session_dates = pd.to_datetime(grp["session_date"]).values
 

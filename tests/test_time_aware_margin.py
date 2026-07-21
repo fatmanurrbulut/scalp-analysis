@@ -87,6 +87,36 @@ def test_max_observed_pct_change_excludes_contaminated_spike():
     assert result["max_observed_pct_change"] == pytest.approx(3.0, abs=0.001)
 
 
+def test_calibration_window_prevents_evaluated_row_from_inflating_its_own_cap():
+    # REGRESYON: gerçek bir hata — gap_adjusted_margin()'in tavanı olan
+    # max_observed_pct_change, kalibrasyon penceresiyle SINIRLANMAZSA, tam da
+    # o an anomali olup olmadığına bakılan satırın kendisi bu hesaba dahil
+    # oluyordu. pct_change/gap_days formülünde büyük bir gap, devasa bir ham
+    # % sıçramayı bile "sıradan" bir ratio gibi gösterip kontaminasyon
+    # filtresinden kaçırabiliyor — böylece aşırı bir sıçrama kendi kendini
+    # anomaliden muaf tutabiliyordu (kendi kendini besleyen döngü).
+    #
+    # İlk 6 seans (kalibrasyon penceresi) küçük, düzenli bir dalgalanma
+    # gösteriyor (~%0-17.5 ham değişim). 7. seansta (kalibrasyon dışında,
+    # büyük bir gap'ten sonra) devasa bir düşüş var (%87 ham değişim).
+    # calibration_size=6 verildiğinde, bu 7. seansın kendisi max_observed_pct_change
+    # hesabına HİÇ girmemeli.
+    dates = pd.date_range("2026-01-01", periods=6, freq="30D")
+    df6 = _region_df([47, 40, 47, 44, 39, 39], dates)
+    last_date = dates[-1] + pd.DateOffset(days=164)
+    df7 = pd.concat([df6, _region_df([5], [last_date])], ignore_index=True)
+
+    result = compute_personal_time_sensitivity(
+        df7, "hair_density_hairs_cm2", None, None, min_pairs=4, calibration_size=6,
+    )
+    assert result["source"] == "personal_time_calibration"
+    # sadece ilk 6 seansın 5 çifti kullanılmalı — 7. seansa giden çift HİÇ değil
+    assert result["n_pairs"] == 5
+    # kalibrasyon penceresindeki en büyük ham değişim ~%17.5 (40->47) — %87 değil
+    assert result["max_observed_pct_change"] == pytest.approx(17.5, abs=0.5)
+    assert result["max_observed_pct_change"] < 50.0
+
+
 # ─── gap_adjusted_margin ─────────────────────────────────────────────────────
 
 def test_gap_adjusted_margin_small_change_for_short_gap():
@@ -257,3 +287,28 @@ def test_backward_compatible_output_when_time_aware_disabled():
 
     anomalies = result[result["hair_density_hairs_cm2_is_anomaly"]]
     assert list(anomalies["session_no"]) == [7]
+
+
+def test_integration_extreme_late_drop_still_flagged_as_anomaly_after_long_gap():
+    # REGRESYON (uçtan uca): gerçek kullanım sırasında yakalanan bir hata —
+    # kalibrasyon penceresi sınırlanmadan önce, uzun bir boşluktan sonra gelen
+    # aşırı bir düşüş kendi kendini anomaliden muaf tutabiliyordu (bkz.
+    # test_calibration_window_prevents_evaluated_row_from_inflating_its_own_cap).
+    # Burada tam senaryo detect_anomalies üzerinden uçtan uca doğrulanıyor:
+    # 6 seanslık düzenli/küçük dalgalanma + 164 gün sonra aşırı bir düşüş,
+    # zaman-duyarlı marj açıkken de HÂLÂ anomali olarak işaretlenmeli.
+    dates = dates_from(6, step_days=30)
+    last_date = pd.Timestamp(dates[-1]) + pd.DateOffset(days=164)
+    dates = dates + [last_date.strftime("%Y-%m-%d")]
+    values = [47, 40, 47, 44, 39, 39, 5]  # son değer: gerçek kullanıcı senaryosundaki gibi aşırı düşüş
+    df = make_df("P1", "Crown", dates, values, [50] * 7, ["Terminal"] * 7)
+    prepared = prepare_session_df(df.copy())
+
+    result = detect_anomalies(
+        prepared, **DEFAULT_PARAMS, trend_lookup={}, use_time_aware_margin=True,
+    )
+    last = result[result["session_no"] == 7].iloc[0]
+    assert last["hair_density_hairs_cm2_gap_days"] == 164
+    assert last["hair_density_hairs_cm2_margin_used"] < 50.0  # tavan makul kalmalı, ~%87'lik sapmayı örtmemeli
+    assert last["hair_density_hairs_cm2_is_anomaly"] == True
+    assert last["hair_density_hairs_cm2_direction"] == "low"

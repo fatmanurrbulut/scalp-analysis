@@ -208,6 +208,7 @@ def compute_personal_time_sensitivity(
     trend_direction: str | None,
     trend_confidence: str | None,
     min_pairs: int = 4,
+    calibration_size: int = 6,
     contamination_threshold: float = CONTAMINATION_THRESHOLD,
     contamination_min_pct: float = CONTAMINATION_MIN_PCT,
 ) -> dict:
@@ -219,6 +220,19 @@ def compute_personal_time_sensitivity(
     kullanılmaz (bkz. proje tasarım kararı) — tamamen hastanın kendi
     (patient_id, region) geçmişine dayanır.
 
+    KRİTİK: hesaplama, compute_personal_margin ile AYNI mantıkla, sadece
+    ilk `calibration_size` seansla SINIRLANIR — tüm geçmiş (özellikle şu an
+    anomali olup olmadığına bakılan EN SON satır) kullanılmaz. Aksi halde
+    kendi kendini besleyen bir döngü oluşur: aşırı büyük tek bir sıçrama
+    (tam da anomali arandığı satır), hem `rate`'i hem de aşağıdaki
+    `max_observed_pct_change` tavanını ŞİŞİRİP kendi kendini anomaliden
+    muaf tutabilir (gözlemlenen gerçek bir hata: gap büyüdükçe ratio
+    küçüldüğü için — pct_change/gap_days — devasa bir ham % sıçrama bile
+    "sıradan" bir ratio gibi görünüp kontaminasyon filtresinden kaçabiliyor).
+    Sabit kalibrasyon penceresi bunu yapısal olarak imkânsız kılar: pencere
+    her zaman en erken `calibration_size` seansla sınırlı kalır, sonradan
+    eklenen hiçbir seans (anomali olsun olmasın) bu pencereyi etkilemez.
+
     Trend kirlenmesi kapısı (ÖNCELİKLE kontrol edilir): hasta yavaş ama
     gerçek, sürekli bir eğilim yaşıyorsa (trend_direction "Increasing"/
     "Decreasing" VE trend_confidence "high"), bu gerçek trend "doğal
@@ -226,8 +240,8 @@ def compute_personal_time_sensitivity(
     ÇALIŞTIRILMAZ — source="trend_present_skipped" döner ve rgrp hiç
     okunmaz (n_pairs=0).
 
-    Aksi halde, session_date'e göre sıralanmış ardışık (i-1, i) seans
-    çifti için:
+    Aksi halde, session_date'e göre sıralanmış ilk `calibration_size` seans
+    içindeki ardışık (i-1, i) seans çifti için:
         gap_days   = (session_date[i] - session_date[i-1]).gün sayısı
         pct_change = |val[i] - val[i-1]| / val[i-1] * 100
         ratio      = pct_change / gap_days
@@ -262,6 +276,8 @@ def compute_personal_time_sensitivity(
         trend_direction:  analyze_patient_trend çıktısındaki "direction".
         trend_confidence: analyze_patient_trend çıktısındaki "confidence".
         min_pairs:        Kalibrasyon için gereken minimum geçerli çift sayısı.
+        calibration_size: compute_personal_margin ile AYNI kalibrasyon
+                           penceresi — sadece ilk bu kadar seans kullanılır.
 
     Returns:
         {
@@ -282,7 +298,7 @@ def compute_personal_time_sensitivity(
             "pairs_excluded": 0,
         }
 
-    ordered = rgrp.sort_values("session_date")
+    ordered = rgrp.sort_values("session_date").head(calibration_size)
     dates = pd.to_datetime(ordered["session_date"]).values
     vals = ordered[metric_col].astype(float).values
 

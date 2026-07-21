@@ -291,6 +291,19 @@ rate       = ratio'ların MEDYANI   (ortalama değil — tek büyük sıçramaya
                                      dayanıklı olsun diye)
 ```
 
+**KRİTİK — sabit kalibrasyon penceresi (`calibration_size`, varsayılan ilk 6
+seans):** Bu hesap `compute_personal_margin` ile AYNI pencereyle sınırlıdır —
+tüm geçmiş değil, sadece ilk `calibration_size` seans kullanılır. Bu, gerçek
+kullanımda yakalanan bir hatayı önlemek için zorunludur: pencere
+sınırlanmazsa, tam da o an anomali olup olmadığına bakılan EN SON satırın
+kendisi de hesaba katılır — `ratio = pct_change / gap_days` formülünde büyük
+bir gap, devasa bir ham % sıçramayı bile "sıradan" bir ratio gibi gösterip
+kontaminasyon filtresinden kaçırabiliyordu, yani aşırı bir sıçrama kendi
+toleransını (hem `rate`'i hem aşağıdaki tavanı) şişirip kendi kendini
+anomaliden muaf tutabiliyordu. Sabit pencere bunu yapısal olarak imkânsız
+kılar: sonradan eklenen hiçbir seans (anomali olsun olmasın) bu pencereyi
+etkilemez.
+
 **Trend kirlenmesi koruması (ÖNCELİKLE kontrol edilir):** hasta yavaş ama
 gerçek, sürekli bir eğilim yaşıyorsa (`trend_analysis`'ın `direction`
 "Increasing"/"Decreasing" VE `confidence="high"` dediği bölgeler), bu gerçek
