@@ -325,6 +325,15 @@ with st.expander("Seans verilerini düzenle", expanded=False):
                 for issue in exc.issues:
                     location = f"{len(issue['row_indices'])} satır" if issue["row_indices"] else "dosya geneli"
                     st.error(f"- **{issue['type']}** (`{issue['column']}`) — {location}")
+            else:
+                # validate_and_prepare, session_no'yu yeniden hesaplayıp satırları
+                # session_date'e göre yeniden sıralıyor — bu, data_editor widget'ının
+                # (aynı key ile) bir sonraki render'da tuttuğu satır sırasıyla uyuşmayabilir
+                # ve YENİ bir girişin "kayıp" görünüp iki kez girilmesi gerekmesine yol
+                # açabiliyordu. Değişikliği hemen commit ettikten sonra bir st.rerun()
+                # ile taze bir çalıştırma tetiklemek, widget'ı güncel working_df ile
+                # senkron başlatır — kullanıcının aynı veriyi tekrar girmesi gerekmez.
+                st.rerun()
 
         _col_a, _col_b, _col_c = st.columns(3)
 
