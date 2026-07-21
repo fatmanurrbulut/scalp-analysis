@@ -292,7 +292,18 @@ with st.expander("Seans verilerini düzenle", expanded=False):
             if _col not in _EDITABLE_COLS:
                 _column_config[_col] = st.column_config.Column(disabled=True)
 
-        _editor_key = f"editor_{selected_pid}_{test_mode_region}"
+        # Reset butonları sadece st.session_state["working_df"]'i değiştirmek
+        # yetmiyor — st.data_editor kendi düzenlenmiş halini widget key'ine
+        # bağlı olarak ayrıca tutuyor, session_state'ten pop etmek bu widget
+        # için güvenilir bir sıfırlama olmuyor (eski satırlar ekranda kalmaya
+        # devam edebiliyor). Bu yüzden key'e bir versiyon sayacı ekleniyor —
+        # reset sonrası sayaç artınca key TAMAMEN yeni bir string olur ve
+        # Streamlit widget'ı sıfırdan (working_df'in güncel haliyle) kurar.
+        if "test_mode_editor_version" not in st.session_state:
+            st.session_state["test_mode_editor_version"] = 0
+        _editor_version = st.session_state["test_mode_editor_version"]
+
+        _editor_key = f"editor_{selected_pid}_{test_mode_region}_v{_editor_version}"
         edited = st.data_editor(
             editable_slice,
             num_rows="dynamic",
@@ -324,12 +335,12 @@ with st.expander("Seans verilerini düzenle", expanded=False):
             st.session_state["working_df"] = pd.concat(
                 [_current[~_current_mask], df_raw[_orig_mask]], ignore_index=True,
             )
-            st.session_state.pop(_editor_key, None)
+            st.session_state["test_mode_editor_version"] = _editor_version + 1
             st.rerun()
 
         if _col_b.button("Tüm değişiklikleri sıfırla"):
             st.session_state["working_df"] = df_raw.copy()
-            st.session_state.pop(_editor_key, None)
+            st.session_state["test_mode_editor_version"] = _editor_version + 1
             st.rerun()
 
         _col_c.download_button(
