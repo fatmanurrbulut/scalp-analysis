@@ -1,5 +1,8 @@
 import math
 
+import pandas as pd
+
+from margin_utils import prepare_session_df
 from tests.conftest import dates_from, make_df
 from trend_analysis import analyze_patient_trend
 
@@ -63,3 +66,33 @@ def test_two_session_region_p_value_is_none_not_nan():
     assert region["r_squared"] is not None or region["r_squared"] is None  # NaN'a düşmemeli, ikisi de JSON-safe
     if region["r_squared"] is not None:
         assert not math.isnan(region["r_squared"])
+
+
+def test_strand_level_tv_ratio_uses_last_n_sessions_not_last_n_rows():
+    # Strand-seviyesi CSV: her session_date için birden çok satır (kıl).
+    # Önceden rgrp.tail(window_size) SATIR keserdi — strand modelinde bu son
+    # session'ın sadece birkaç kılı olurdu, "son 3 SEANS" değil. session_count
+    # de strand sayısına (n_sessions*strands) şişerdi.
+    dates = dates_from(5)
+    rows = []
+    for si, date in enumerate(dates):
+        density = 100.0 + si
+        thickness = 50.0 + si
+        # İlk 2 session tamamen Intermediate (T/V'ye katkısı yok), son 3
+        # session'da her birinde 6 Terminal + 4 Vellus -> son 3 session
+        # toplamında 18 Terminal / 12 Vellus = 1.5
+        hair_types = ["Intermediate"] * 10 if si < 2 else ["Terminal"] * 6 + ["Vellus"] * 4
+        for k, ht in enumerate(hair_types):
+            rows.append({
+                "patient_id": "P1", "first_name": "Test", "last_name": "P1",
+                "session_date": date, "region": "Vertex",
+                "hair_density_hairs_cm2": density, "hair_thickness_um": thickness,
+                "hair_type": ht, "strand_id": f"S{si}_{k}",
+            })
+    df = prepare_session_df(pd.DataFrame(rows))
+
+    result = analyze_patient_trend(df, "P1", window_size=3, calibration_size=2, floor_pct=3.0)
+    region = _region(result, "Vertex")
+
+    assert region["session_count"] == 5  # 5 seans, 44 strand değil
+    assert region["tv_ratio"] == 1.5

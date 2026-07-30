@@ -5,14 +5,14 @@ import pytest
 from margin_utils import prepare_session_df
 from region_comparison import analyze_region_comparison
 
-# NOT: Referans region_anova_analysis.py'deki "replicate" senaryosu (bir
-# region-session kombinasyonunda birden fazla ölçüm) burada test edilmiyor —
-# bu şemada imkansız. data_validation._check_duplicates aynı
-# (patient_id, session_date, region) için birden fazla satırı zaten veri
-# doğrulama hatası olarak reddediyor (bkz. tests/test_data_validation.py),
-# yani prod pipeline'ında bu satıra hiç ulaşılamaz. region_comparison.py da
-# bu yüzden "replicate" koduna hiç sahip değil — sadece window_fallback ve
-# insufficient_data yolları var.
+# NOT: Strand-seviyesi CSV modelinde (her satır tek bir kıl, bkz.
+# test_region_cv_std_handles_strand_level_duplicate_rows) aynı
+# (patient_id, session_date, region) için KASITLI olarak çok satır bulunur —
+# data_validation._check_duplicates bunu artık reddetmiyor (strand_id
+# tekilliği sağlıyorsa, bkz. tests/test_data_validation.py). region_series
+# bu yüzden seriyi kurmadan önce (region, session_no) bazında mean() ile
+# tek değere indirgeniyor — klasik "replicate grup" ANOVA'sı hâlâ yok, sadece
+# .loc[session_no]'nun tek skaler dönmesi garanti ediliyor.
 
 REGIONS = ["Frontal", "Mid Scalp", "Crown", "Vertex", "Occipital", "Left Parietal", "Right Parietal"]
 
@@ -98,6 +98,32 @@ def test_unknown_patient_raises_value_error():
 
     with pytest.raises(ValueError, match="patient_id bulunamadı"):
         analyze_region_comparison(df, "NOT-A-PATIENT")
+
+
+def test_region_cv_std_handles_strand_level_duplicate_rows():
+    # Strand-seviyesi CSV: her (region, session_no) için birden çok satır
+    # (her satır bir kıl), density/thickness bu satırlarda TEKRARLANIR.
+    # Öncesinde .loc[session_no] birden fazla eşleşme yüzünden Series
+    # dönüp float() çağrısında TypeError atıyordu.
+    dates = _dates(5)
+    strand_rows = []
+    for si, date in enumerate(dates):
+        density = 100.0 + si  # session-level değer, strand'lara tekrarlanır
+        for k in range(6):  # bölge-seans başına 6 strand
+            strand_rows.append({
+                "patient_id": "P9", "first_name": "Test", "last_name": "P9",
+                "session_date": date, "region": "Frontal",
+                "hair_density_hairs_cm2": density, "hair_thickness_um": 50.0,
+                "strand_id": f"S{si}_{k}",
+            })
+    df = prepare_session_df(pd.DataFrame(strand_rows))
+
+    result = analyze_region_comparison(df, "P9", metric="hair_density_hairs_cm2", window=3)
+
+    assert result["region_cv_std"]["Frontal"]["n"] == 5  # 5 seans, 30 strand değil
+    assert result["region_cv_std"]["Frontal"]["mean"] == 102.0
+    for s in result["sessions"]:
+        assert s["region_means"]["Frontal"] == round(100.0 + (s["session_no"] - 1), 2)
 
 
 def test_invalid_metric_raises_value_error():

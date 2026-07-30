@@ -83,14 +83,22 @@ def _check_hair_type(df: pd.DataFrame, column: str = "hair_type") -> list[dict]:
 
 
 def _check_duplicates(df: pd.DataFrame) -> list[dict]:
-    if not set(_DUPLICATE_KEY_COLUMNS).issubset(df.columns):
+    # Strand-seviyesi CSV'lerde (her satır tek bir kıl) aynı (patient_id,
+    # session_date, region) içinde KASITLI olarak çok satır bulunur —
+    # `strand_id` her satırı benzersiz yapar. `strand_id` varsa tekillik
+    # anahtarına eklenir (gerçek duplicate: aynı strand'in iki kez girilmesi);
+    # yoksa (eski, seans-seviyesi CSV'ler) eski davranış aynen korunur.
+    key_columns = list(_DUPLICATE_KEY_COLUMNS)
+    if "strand_id" in df.columns:
+        key_columns.append("strand_id")
+    if not set(key_columns).issubset(df.columns):
         return []
-    dup_mask = df.duplicated(subset=list(_DUPLICATE_KEY_COLUMNS), keep=False)
+    dup_mask = df.duplicated(subset=key_columns, keep=False)
     if not dup_mask.any():
         return []
     return [{
         "type": "duplicate_measurement",
-        "column": "+".join(_DUPLICATE_KEY_COLUMNS),
+        "column": "+".join(key_columns),
         "row_indices": df.index[dup_mask].tolist(),
     }]
 

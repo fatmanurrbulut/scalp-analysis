@@ -67,6 +67,26 @@ def test_duplicate_measurement_rejected():
     assert exc_info.value.issues[0]["type"] == "duplicate_measurement"
 
 
+def test_strand_level_rows_with_unique_strand_id_not_rejected_as_duplicate():
+    # Strand-seviyesi model: aynı (patient_id, session_date, region) içinde
+    # KASITLI olarak çok satır var (her satır bir kıl) — strand_id her
+    # satırı benzersiz yapar, bu artık duplicate_measurement sayılmamalı.
+    df = make_df("P1", "Vertex", ["2026-01-01"] * 3, [100, 100, 100], [50, 50, 50], ["Terminal", "Vellus", "Vellus"])
+    df["strand_id"] = ["S1", "S2", "S3"]
+    prepared = validate_and_prepare(df, require_bio=True)
+    assert len(prepared) == 3
+
+
+def test_strand_level_exact_duplicate_strand_id_still_rejected():
+    # Aynı strand_id'nin iki kez girilmesi gerçek bir duplicate'tir, strand
+    # modelinde bile yakalanmalı.
+    df = make_df("P1", "Vertex", ["2026-01-01"] * 3, [100, 100, 100], [50, 50, 50], ["Terminal", "Vellus", "Vellus"])
+    df["strand_id"] = ["S1", "S1", "S3"]
+    with pytest.raises(DataValidationError) as exc_info:
+        validate_and_prepare(df, require_bio=True)
+    assert exc_info.value.issues[0]["type"] == "duplicate_measurement"
+
+
 def test_nan_numeric_value_rejected():
     df = make_df("P1", "Vertex", dates_from(1), [float("nan")], [50], ["Terminal"])
     with pytest.raises(DataValidationError) as exc_info:
