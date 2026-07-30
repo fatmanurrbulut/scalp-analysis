@@ -646,13 +646,24 @@ def _render_region_comparison(result: dict | None, label: str) -> None:
 
 left_col, right_col = st.columns([3, 2])
 
+metric_keys = list(METRICS.keys())
+
 with left_col:
-    tab1, tab2 = st.tabs(list(METRICS.values()))
-    metric_keys = list(METRICS.keys())
-    with tab1:
-        _render_chart(metric_keys[0], list(METRICS.values())[0])
-    with tab2:
-        _render_chart(metric_keys[1], list(METRICS.values())[1])
+    # segmented_control (st.tabs değil) kullanılıyor çünkü seçili değeri bir
+    # değişkende dönüyor — sağ paneldeki CV/Std tablosunun da AYNI seçime
+    # bağlanabilmesi için tek kaynak burası (st.tabs seçili sekmeyi state
+    # olarak dışarı vermiyor, iki ayrı seçici olmasına yol açardı).
+    selected_metric_key = st.segmented_control(
+        "Metrik",
+        options=metric_keys,
+        format_func=lambda k: METRICS[k],
+        default=metric_keys[0],
+        key=f"metric_selector_{selected_pid}",
+        label_visibility="collapsed",
+    )
+    if selected_metric_key is None:  # tek-seçim segmented_control tekrar tıklanınca deselect olabilir
+        selected_metric_key = metric_keys[0]
+    _render_chart(selected_metric_key, METRICS[selected_metric_key])
 
 with right_col:
     st.subheader("Bölge Kararlılığı (Zamansal CV & Std)")
@@ -661,17 +672,27 @@ with right_col:
         "seanslarındaki değerlerinden hesaplanan varyasyon katsayısı (CV%) ve "
         "standart sapma. Bölgeler arası anlık farklılık (cross-sectional) "
         "değil, bölgenin zaman içindeki tutarlılığı gösterilir — gün-içi "
-        "ölçüm gürültüsüyle karıştırılmamalıdır."
+        "ölçüm gürültüsüyle karıştırılmamalıdır. Metrik seçimi soldaki "
+        "grafikle paylaşılır."
     )
 
-    _cv_metric_key = st.radio(
-        "Metrik",
-        options=list(METRICS.keys()),
-        format_func=lambda k: METRICS[k],
-        horizontal=True,
-        key=f"cv_metric_{selected_pid}",
-    )
-    _cv_result = region_comparison_results.get(_cv_metric_key)
+    _cv_result = region_comparison_results.get(selected_metric_key)
+
+    _tv_by_region: dict = {}
+    if clinical_trend is not None:
+        _tv_by_region = {r["region"]: r.get("tv_ratio") for r in clinical_trend["regions"]}
+
+    # Kırmızı vurgu SADECE o bölgenin EN SON seansı heavy anomaliyse yanar —
+    # "şu an dikkat gerektiriyor" sinyali. Geçmişte bir kez yaşanmış, o zamandan
+    # beri sorunsuz seyreden bir sapmayı süresiz kırmızı göstermemek için
+    # "bölgenin geçmişinde hiç mi hiç heavy olmadı" gibi çok gevşek bir koşul
+    # KASITLI olarak kullanılmıyor.
+    _sev_col = f"{selected_metric_key}_severity"
+    if _sev_col in df.columns:
+        _latest_per_region = df.sort_values("session_date").groupby("region", as_index=False).tail(1)
+        _outlier_regions = set(_latest_per_region.loc[_latest_per_region[_sev_col] == "heavy", "region"])
+    else:
+        _outlier_regions = set()
 
     if _cv_result is None or not _cv_result.get("region_cv_std"):
         st.info("Bölge kararlılığı için yeterli veri yok.")
@@ -682,15 +703,24 @@ with right_col:
                 "Ort.":  stats["mean"],
                 "Std":   stats["std"] if stats["std"] is not None else "N/A",
                 "CV%":   stats["cv_pct"] if stats["cv_pct"] is not None else "N/A",
+                "T/V Oranı": _tv_by_region.get(region) if _tv_by_region.get(region) is not None else "N/A",
             }
             for region, stats in _cv_result["region_cv_std"].items()
         ]
+
+        def _region_cv_style(row):
+            if row["Bölge"] in _outlier_regions:
+                return [_RED] * len(row)
+            return [_NORM] * len(row)
+
         st.dataframe(
-            pd.DataFrame(_cv_rows).sort_values("Bölge"),
+            pd.DataFrame(_cv_rows).sort_values("Bölge").style.apply(_region_cv_style, axis=1),
             use_container_width=True,
             hide_index=True,
             height=390,
         )
+        if _outlier_regions:
+            st.caption(f"🔴 En son seansı heavy anomali olan bölgeler: {', '.join(sorted(_outlier_regions))}")
 
 
 # ── Bölge Karşılaştırma (ANOVA) ─────────────────────────────────────────────────
