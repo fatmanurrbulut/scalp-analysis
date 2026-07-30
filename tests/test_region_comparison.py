@@ -145,3 +145,42 @@ def test_region_cv_std_none_when_single_session():
         assert stats["n"] == 1
         assert stats["std"] is None
         assert stats["cv_pct"] is None
+
+
+def test_tv_ratio_mean_is_none_by_default():
+    rng = np.random.default_rng(5)
+    region_base_values = {r: 50.0 + i * 5 for i, r in enumerate(REGIONS)}
+    df = _build_df("P7", n_sessions=8, region_base_values=region_base_values, rng=rng)
+
+    result = analyze_region_comparison(df, "P7", metric="hair_density_hairs_cm2", window=6)
+
+    for stats in result["region_cv_std"].values():
+        assert stats["tv_ratio_mean"] is None
+
+
+def test_tv_ratio_mean_is_read_from_injected_dict_without_affecting_anova():
+    # tv_ratio_by_region SADECE bilgi kolonu olmalı — verilmesi ANOVA/CV/std
+    # sonuçlarını değiştirmemeli, sadece region_cv_std'ye ek bir alan eklemeli.
+    rng = np.random.default_rng(6)
+    region_base_values = {r: 50.0 + i * 20 for i, r in enumerate(REGIONS)}
+    df = _build_df("P8", n_sessions=8, region_base_values=region_base_values, rng=rng)
+
+    baseline = analyze_region_comparison(df, "P8", metric="hair_density_hairs_cm2", window=6)
+
+    injected_tv = {"Frontal": 2.5, "Vertex": 1.1}  # sadece bir kısmı verildi
+    with_tv = analyze_region_comparison(
+        df, "P8", metric="hair_density_hairs_cm2", window=6, tv_ratio_by_region=injected_tv,
+    )
+
+    assert with_tv["region_cv_std"]["Frontal"]["tv_ratio_mean"] == 2.5
+    assert with_tv["region_cv_std"]["Vertex"]["tv_ratio_mean"] == 1.1
+    # tv_ratio_by_region'da olmayan bölgeler için None (KeyError değil)
+    assert with_tv["region_cv_std"]["Crown"]["tv_ratio_mean"] is None
+
+    # ANOVA ve CV/std sayıları tv_ratio_by_region'dan tamamen bağımsız kalmalı
+    for region in REGIONS:
+        base_stats = {k: v for k, v in baseline["region_cv_std"][region].items() if k != "tv_ratio_mean"}
+        tv_stats = {k: v for k, v in with_tv["region_cv_std"][region].items() if k != "tv_ratio_mean"}
+        assert base_stats == tv_stats
+    for base_s, tv_s in zip(baseline["sessions"], with_tv["sessions"]):
+        assert base_s == tv_s

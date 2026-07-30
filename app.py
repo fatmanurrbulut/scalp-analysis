@@ -135,11 +135,15 @@ def _region_comparison(
     metric: str,
     window: int,
     alpha: float,
+    tv_ratio_items: tuple[tuple[str, float | None], ...] | None = None,
 ) -> dict | None:
     pat = df[df["patient_id"] == pid]
     if pat.empty:
         return None
-    return analyze_region_comparison(df, pid, metric=metric, window=window, alpha=alpha)
+    tv_ratio_by_region = dict(tv_ratio_items) if tv_ratio_items else None
+    return analyze_region_comparison(
+        df, pid, metric=metric, window=window, alpha=alpha, tv_ratio_by_region=tv_ratio_by_region,
+    )
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -371,8 +375,18 @@ df = _analyze(
     use_time_aware_margin,
 )
 clinical_trend = _clinical_trend(working_df, selected_pid, calibration_size, fallback_pct, calibration_size, floor_pct)
+
+# T/V oranı SADECE bilgi amaçlı — trend_analysis.py'de zaten hesaplanmış
+# değer bölge bazında okunuyor, burada YENİDEN HESAPLANMIYOR. Panel 1 ve
+# ANOVA altındaki CV/Std tabloları aynı kaynaktan besleniyor (simetrik).
+tv_by_region: dict = {}
+if clinical_trend is not None:
+    tv_by_region = {r["region"]: r.get("tv_ratio") for r in clinical_trend["regions"]}
+_tv_ratio_items = tuple(sorted(tv_by_region.items())) if tv_by_region else None
+
 region_comparison_results = {
-    m: _region_comparison(working_df, selected_pid, m, calibration_size, ANOVA_ALPHA) for m in METRICS
+    m: _region_comparison(working_df, selected_pid, m, calibration_size, ANOVA_ALPHA, _tv_ratio_items)
+    for m in METRICS
 }
 
 severity_counts = {"heavy": 0, "medium": 0, "light": 0}
@@ -632,6 +646,7 @@ def _render_region_comparison(result: dict | None, label: str) -> None:
                 "Ort.":  stats["mean"],
                 "Std":   stats["std"] if stats["std"] is not None else "N/A",
                 "CV%":   stats["cv_pct"] if stats["cv_pct"] is not None else "N/A",
+                "T/V Oranı": stats.get("tv_ratio_mean") if stats.get("tv_ratio_mean") is not None else "N/A",
             }
             for region, stats in _cv_std.items()
         ]
@@ -678,10 +693,6 @@ with right_col:
 
     _cv_result = region_comparison_results.get(selected_metric_key)
 
-    _tv_by_region: dict = {}
-    if clinical_trend is not None:
-        _tv_by_region = {r["region"]: r.get("tv_ratio") for r in clinical_trend["regions"]}
-
     # Kırmızı vurgu SADECE o bölgenin EN SON seansı heavy anomaliyse yanar —
     # "şu an dikkat gerektiriyor" sinyali. Geçmişte bir kez yaşanmış, o zamandan
     # beri sorunsuz seyreden bir sapmayı süresiz kırmızı göstermemek için
@@ -703,7 +714,7 @@ with right_col:
                 "Ort.":  stats["mean"],
                 "Std":   stats["std"] if stats["std"] is not None else "N/A",
                 "CV%":   stats["cv_pct"] if stats["cv_pct"] is not None else "N/A",
-                "T/V Oranı": _tv_by_region.get(region) if _tv_by_region.get(region) is not None else "N/A",
+                "T/V Oranı": stats.get("tv_ratio_mean") if stats.get("tv_ratio_mean") is not None else "N/A",
             }
             for region, stats in _cv_result["region_cv_std"].items()
         ]

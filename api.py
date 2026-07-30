@@ -169,10 +169,11 @@ class SessionRegionComparison(BaseModel):
 
 
 class RegionCVStd(BaseModel):
-    n:      int
-    mean:   float | None
-    std:    float | None
-    cv_pct: float | None
+    n:             int
+    mean:          float | None
+    std:           float | None
+    cv_pct:        float | None
+    tv_ratio_mean: float | None = None
 
 
 class RegionComparisonResponse(BaseModel):
@@ -683,6 +684,10 @@ async def region_comparison(
     içinde ne kadar kararlı" sorusuna cevap verir, ANOVA'nın cross-sectional
     (bölgeler birbirinden ne kadar farklı) sorusundan bağımsızdır. n < 2 olan
     bölgelerde `std`/`cv_pct` None döner.
+
+    `region_cv_std[region].tv_ratio_mean`: bölgenin trend_analysis.py'de zaten
+    hesaplanmış T/V oranı — SADECE bilgi amaçlıdır, ANOVA/CV/std hesabına
+    katılmaz. CSV'de `hair_type` sütunu yoksa None döner.
     """
     if metric not in METRICS:
         raise HTTPException(
@@ -703,7 +708,24 @@ async def region_comparison(
     if patient_id not in df["patient_id"].values:
         raise HTTPException(status_code=404, detail=f"patient_id bulunamadı: {patient_id}")
 
-    result = analyze_region_comparison(df, patient_id, metric, window, alpha)
+    # T/V oranı SADECE bilgi amaçlı — trend_analysis.py'de zaten hesaplanan
+    # değeri okur, burada YENİDEN HESAPLAMAZ, ANOVA/CV/std'ye katılmaz.
+    # hair_type sütunu bu CSV'de yoksa (bu endpoint onu zorunlu kılmıyor,
+    # sadece density/thickness yeterli) sessizce None bırakılır — geriye
+    # dönük uyumluluk bozulmaz.
+    tv_ratio_by_region: dict[str, float] | None = None
+    if "hair_type" in df.columns:
+        try:
+            trend_result = analyze_patient_trend(
+                df, patient_id,
+                threshold_pct=10.0, window_size=3, sigma_mult=2.0,
+                fallback_pct=ANOMALY_MIN_PCT_MARGIN, calibration_size=6, floor_pct=3.0,
+            )
+            tv_ratio_by_region = {r["region"]: r.get("tv_ratio") for r in trend_result["regions"]}
+        except ValueError:
+            tv_ratio_by_region = None
+
+    result = analyze_region_comparison(df, patient_id, metric, window, alpha, tv_ratio_by_region)
     return RegionComparisonResponse(**result)
 
 

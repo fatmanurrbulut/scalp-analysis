@@ -48,6 +48,7 @@ def analyze_region_comparison(
     metric: str = "hair_density_hairs_cm2",
     window: int = 6,
     alpha: float = 0.05,
+    tv_ratio_by_region: dict[str, float] | None = None,
 ) -> dict:
     """
     Hasta × session bazlı 7 bölge karşılaştırması + ANOVA.
@@ -70,13 +71,20 @@ def analyze_region_comparison(
                         göre pencerelenmemiş) zamansal ortalama/std/CV% —
                         "bu bölge zaman içinde ne kadar kararlı" sorusuna
                         cevap verir; ANOVA'nın cross-sectional (bölgeler
-                        arası anlık fark) sorusundan farklıdır
+                        arası anlık fark) sorusundan farklıdır. Her bölgenin
+                        dict'i ayrıca `tv_ratio_mean` alanı taşır (bkz. aşağı).
 
     Args:
         metric: METRICS içindeki bir metrik (hair_density_hairs_cm2 / hair_thickness_um)
         window: ANOVA grubu için kullanılan session sayısı (mevcut session dahil)
         alpha:  anlamlılık eşiği (response'ta taşınır, karar mantığına katılmaz;
                 p<alpha yorumlaması tüketen tarafa bırakılır)
+        tv_ratio_by_region: opsiyonel, {region: tv_ratio} — trend_analysis.py'de
+                zaten hesaplanmış T/V oranının bölge bazlı değeri. SADECE bilgi
+                amaçlı `region_cv_std[region]["tv_ratio_mean"]` alanına taşınır;
+                bu fonksiyon T/V'yi YENİDEN HESAPLAMAZ ve ANOVA/CV/std hesabına
+                hiçbir şekilde KATILMAZ. Verilmezse veya bölge için karşılık
+                yoksa None döner.
 
     Raises:
         ValueError: patient_id bulunamazsa veya metric METRICS'te değilse
@@ -103,7 +111,11 @@ def analyze_region_comparison(
     # birbirinden ne kadar farklı) bağımsız, "bu bölge zaman içinde ne kadar
     # kararlı" sorusuna cevap verir.
     region_cv_std: dict[str, dict] = {
-        region: compute_cv_std(series.values) for region, series in region_series.items()
+        region: {
+            **compute_cv_std(series.values),
+            "tv_ratio_mean": (tv_ratio_by_region or {}).get(region),
+        }
+        for region, series in region_series.items()
     }
 
     sessions: list[dict] = []
