@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from margin_utils import compute_cv_std
 from scalp_analysis import METRICS
 
 
@@ -65,6 +66,11 @@ def analyze_region_comparison(
                         2 bölgede yeterli veri yok — p-değeri üretilmedi)
         warning:        anova_method="insufficient_data" iken neden
                         hesaplanamadığını açıklayan metin
+        region_cv_std:  her bölgenin TÜM seans geçmişi üzerinden (session'a
+                        göre pencerelenmemiş) zamansal ortalama/std/CV% —
+                        "bu bölge zaman içinde ne kadar kararlı" sorusuna
+                        cevap verir; ANOVA'nın cross-sectional (bölgeler
+                        arası anlık fark) sorusundan farklıdır
 
     Args:
         metric: METRICS içindeki bir metrik (hair_density_hairs_cm2 / hair_thickness_um)
@@ -90,6 +96,14 @@ def analyze_region_comparison(
     region_series: dict[str, pd.Series] = {
         region: rgrp.sort_values("session_no").set_index("session_no")[metric]
         for region, rgrp in pdf.groupby("region", sort=False)
+    }
+
+    # Bölge bazlı zamansal kararlılık: pencere/session'a göre değil, bölgenin
+    # TÜM geçmişi üzerinden — ANOVA'nın cross-sectional sorusundan (bölgeler
+    # birbirinden ne kadar farklı) bağımsız, "bu bölge zaman içinde ne kadar
+    # kararlı" sorusuna cevap verir.
+    region_cv_std: dict[str, dict] = {
+        region: compute_cv_std(series.values) for region, series in region_series.items()
     }
 
     sessions: list[dict] = []
@@ -162,4 +176,5 @@ def analyze_region_comparison(
             "KESİN değil GÖSTERGE olarak yorumlayın."
         ),
         "sessions": sessions,
+        "region_cv_std": region_cv_std,
     }

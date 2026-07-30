@@ -106,3 +106,42 @@ def test_invalid_metric_raises_value_error():
 
     with pytest.raises(ValueError, match="Geçersiz metric"):
         analyze_region_comparison(df, "P4", metric="not_a_metric")
+
+
+def test_region_cv_std_reflects_each_regions_own_temporal_stability():
+    # Frontal sabit (varyans yok), Vertex yüksek dalgalanmalı -> CV%'leri
+    # ayrıştırmalı; bu, cross-sectional ANOVA'dan (bölgeler arası anlık fark)
+    # tamamen bağımsız bir "bölge kendi içinde ne kadar kararlı" ölçüsüdür.
+    dates = _dates(8)
+    stable = _make_region_df("P5", "Frontal", dates, [100.0] * 8)
+    volatile = _make_region_df("P5", "Vertex", dates, [80, 120, 60, 140, 70, 130, 65, 135])
+    df = prepare_session_df(pd.concat([stable, volatile], ignore_index=True))
+
+    result = analyze_region_comparison(df, "P5", metric="hair_density_hairs_cm2", window=6)
+
+    cv_std = result["region_cv_std"]
+    assert set(cv_std.keys()) == {"Frontal", "Vertex"}
+
+    frontal = cv_std["Frontal"]
+    assert frontal["n"] == 8
+    assert frontal["mean"] == 100.0
+    assert frontal["std"] == 0.0
+    assert frontal["cv_pct"] == 0.0
+
+    vertex = cv_std["Vertex"]
+    assert vertex["n"] == 8
+    assert vertex["std"] > frontal["std"]
+    assert vertex["cv_pct"] > frontal["cv_pct"]
+
+
+def test_region_cv_std_none_when_single_session():
+    rng = np.random.default_rng(4)
+    region_base_values = {r: 50.0 + i * 5 for i, r in enumerate(REGIONS)}
+    df = _build_df("P6", n_sessions=1, region_base_values=region_base_values, rng=rng)
+
+    result = analyze_region_comparison(df, "P6", metric="hair_density_hairs_cm2", window=6)
+
+    for stats in result["region_cv_std"].values():
+        assert stats["n"] == 1
+        assert stats["std"] is None
+        assert stats["cv_pct"] is None

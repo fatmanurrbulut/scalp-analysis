@@ -168,6 +168,13 @@ class SessionRegionComparison(BaseModel):
     warning:        str | None = None
 
 
+class RegionCVStd(BaseModel):
+    n:      int
+    mean:   float | None
+    std:    float | None
+    cv_pct: float | None
+
+
 class RegionComparisonResponse(BaseModel):
     patient_id:     str
     patient_name:   str
@@ -176,6 +183,7 @@ class RegionComparisonResponse(BaseModel):
     alpha:          float
     note:           str
     sessions:       list[SessionRegionComparison]
+    region_cv_std:  dict[str, RegionCVStd]
 
 
 class ClinicTrendResponse(BaseModel):
@@ -669,6 +677,12 @@ async def region_comparison(
     Her session için `region_means` (o session'daki her bölgenin ham
     değeri) ve cross-sectional `overall_mean`/`overall_std` de döner —
     "genel trend" grafiği için kullanılabilir.
+
+    `region_cv_std`: her bölgenin TÜM seans geçmişi üzerinden (pencereye
+    bağlı olmayan) zamansal ortalama/std/CV% değeri — "bu bölge zaman
+    içinde ne kadar kararlı" sorusuna cevap verir, ANOVA'nın cross-sectional
+    (bölgeler birbirinden ne kadar farklı) sorusundan bağımsızdır. n < 2 olan
+    bölgelerde `std`/`cv_pct` None döner.
     """
     if metric not in METRICS:
         raise HTTPException(

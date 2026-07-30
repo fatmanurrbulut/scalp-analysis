@@ -1,6 +1,6 @@
 import pandas as pd
 
-from margin_utils import compute_personal_margin, prepare_session_df
+from margin_utils import compute_cv_std, compute_personal_margin, prepare_session_df
 
 
 def _region_df(values, session_dates=None):
@@ -68,3 +68,33 @@ def test_prepare_session_df_normalizes_time_component():
     })
     result = prepare_session_df(df)
     assert result["session_date"].iloc[0] == pd.Timestamp("2026-01-01")
+
+
+def test_compute_cv_std_normal_case():
+    result = compute_cv_std([100, 101, 99, 100, 101, 99])
+    assert result["n"] == 6
+    assert result["mean"] == 100.0
+    assert result["std"] is not None
+    assert result["cv_pct"] is not None
+    assert result["cv_pct"] == round(result["std"] / result["mean"] * 100, 2)
+
+
+def test_compute_cv_std_single_point_has_no_std_or_cv():
+    result = compute_cv_std([100])
+    assert result["n"] == 1
+    assert result["mean"] == 100.0
+    assert result["std"] is None
+    assert result["cv_pct"] is None
+
+
+def test_compute_cv_std_zero_mean_has_no_cv_but_has_std():
+    result = compute_cv_std([-1, 0, 1])
+    assert result["n"] == 3
+    assert result["mean"] == 0.0
+    assert result["std"] is not None
+    assert result["cv_pct"] is None
+
+
+def test_compute_cv_std_empty_input():
+    result = compute_cv_std([])
+    assert result == {"n": 0, "mean": None, "std": None, "cv_pct": None}

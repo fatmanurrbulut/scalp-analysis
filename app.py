@@ -375,14 +375,6 @@ region_comparison_results = {
     m: _region_comparison(working_df, selected_pid, m, calibration_size, ANOVA_ALPHA) for m in METRICS
 }
 
-# Session dates that have at least one anomaly (any region, any metric)
-_omask = pd.Series(False, index=df.index)
-for _m in METRICS:
-    _c = f"{_m}_is_anomaly"
-    if _c in df.columns:
-        _omask |= df[_c].astype(bool)
-outlier_sessions: set = set(df.loc[_omask, "session_date"].unique())
-
 severity_counts = {"heavy": 0, "medium": 0, "light": 0}
 for _m in METRICS:
     _sc = f"{_m}_severity"
@@ -631,6 +623,24 @@ def _render_region_comparison(result: dict | None, label: str) -> None:
     )
     st.plotly_chart(_rc_fig, use_container_width=True)
 
+    _cv_std = result.get("region_cv_std") or {}
+    if _cv_std:
+        st.caption("Bölgelerin seanslar arası kararlılığı (zamansal CV%) — cross-sectional ANOVA'dan bağımsız.")
+        _cv_rows = [
+            {
+                "Bölge": region,
+                "Ort.":  stats["mean"],
+                "Std":   stats["std"] if stats["std"] is not None else "N/A",
+                "CV%":   stats["cv_pct"] if stats["cv_pct"] is not None else "N/A",
+            }
+            for region, stats in _cv_std.items()
+        ]
+        st.dataframe(
+            pd.DataFrame(_cv_rows).sort_values("Bölge"),
+            use_container_width=True,
+            hide_index=True,
+        )
+
 
 # ── Two-panel layout ──────────────────────────────────────────────────────────
 
@@ -645,45 +655,42 @@ with left_col:
         _render_chart(metric_keys[1], list(METRICS.values())[1])
 
 with right_col:
-    st.subheader("Terminal / Vellus Sayımı")
+    st.subheader("Bölge Kararlılığı (Zamansal CV & Std)")
+    st.caption(
+        "Bölgelerin seanslar arası kararlılığı — bölgenin KENDİ geçmiş "
+        "seanslarındaki değerlerinden hesaplanan varyasyon katsayısı (CV%) ve "
+        "standart sapma. Bölgeler arası anlık farklılık (cross-sectional) "
+        "değil, bölgenin zaman içindeki tutarlılığı gösterilir — gün-içi "
+        "ölçüm gürültüsüyle karıştırılmamalıdır."
+    )
 
-    if "hair_type" in df.columns:
-        tv = (
-            df.groupby("session_date")
-            .agg(
-                Terminal=("hair_type", lambda x: (x == "Terminal").sum()),
-                Vellus  =("hair_type", lambda x: (x == "Vellus").sum()),
-            )
-            .reset_index()
-            .sort_values("session_date")
-        )
-        tv["T/V Oranı"] = tv.apply(
-            lambda r: f"{r['Terminal'] / r['Vellus']:.2f}" if r["Vellus"] > 0 else "N/A",
-            axis=1,
-        )
-        tv_disp = pd.DataFrame({
-            "Tarih":     tv["session_date"].dt.strftime("%Y-%m-%d"),
-            "Terminal":  tv["Terminal"],
-            "Vellus":    tv["Vellus"],
-            "T/V Oranı": tv["T/V Oranı"],
-        })
+    _cv_metric_key = st.radio(
+        "Metrik",
+        options=list(METRICS.keys()),
+        format_func=lambda k: METRICS[k],
+        horizontal=True,
+        key=f"cv_metric_{selected_pid}",
+    )
+    _cv_result = region_comparison_results.get(_cv_metric_key)
 
-        def _tv_style(row):
-            try:
-                if pd.Timestamp(row["Tarih"]) in outlier_sessions:
-                    return [_RED] * len(row)
-            except (ValueError, TypeError):
-                pass
-            return [_NORM] * len(row)
-
+    if _cv_result is None or not _cv_result.get("region_cv_std"):
+        st.info("Bölge kararlılığı için yeterli veri yok.")
+    else:
+        _cv_rows = [
+            {
+                "Bölge": region,
+                "Ort.":  stats["mean"],
+                "Std":   stats["std"] if stats["std"] is not None else "N/A",
+                "CV%":   stats["cv_pct"] if stats["cv_pct"] is not None else "N/A",
+            }
+            for region, stats in _cv_result["region_cv_std"].items()
+        ]
         st.dataframe(
-            tv_disp.style.apply(_tv_style, axis=1),
+            pd.DataFrame(_cv_rows).sort_values("Bölge"),
             use_container_width=True,
             hide_index=True,
             height=390,
         )
-    else:
-        st.info("Bu veri setinde `hair_type` sütunu yok.")
 
 
 # ── Bölge Karşılaştırma (ANOVA) ─────────────────────────────────────────────────

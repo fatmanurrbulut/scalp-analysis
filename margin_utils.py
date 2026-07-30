@@ -36,6 +36,31 @@ def prepare_session_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values(["patient_id", "region", "session_no"])
 
 
+def compute_cv_std(values, ddof: int = 1) -> dict:
+    """
+    Bir dizinin ortalama, standart sapma ve varyasyon katsayısını (CV%) hesaplar.
+
+    n < 2 ise std/cv_pct tanımsızdır (None) — tek noktadan varyans hesaplanamaz.
+    mean == 0 iken cv_pct tanımsızdır (sıfıra bölme) — 0.0 hardcode edilmez,
+    None döner (compute_personal_margin'daki aynı temkinli yaklaşım).
+
+    Returns:
+        {"n": int, "mean": float | None, "std": float | None, "cv_pct": float | None}
+    """
+    arr = np.asarray(values, dtype=float)
+    n = len(arr)
+    if n == 0:
+        return {"n": 0, "mean": None, "std": None, "cv_pct": None}
+
+    mean = float(arr.mean())
+    if n < 2:
+        return {"n": n, "mean": round(mean, 2), "std": None, "cv_pct": None}
+
+    std = float(arr.std(ddof=ddof))
+    cv_pct = round(std / mean * 100, 2) if mean != 0 else None
+    return {"n": n, "mean": round(mean, 2), "std": round(std, 2), "cv_pct": cv_pct}
+
+
 def _detect_internal_outliers(
     vals: pd.Series,
     threshold: float,
