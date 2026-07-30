@@ -101,15 +101,9 @@ def analyze_region_comparison(
 
     session_dates = pdf.groupby("session_no")["session_date"].first().sort_index()
 
-    # Strand-seviyesi CSV'lerde (her satır tek bir kıl) aynı (region, session_no)
-    # için birden çok satır bulunur; density/thickness bu satırlarda tekrarlanır.
-    # .loc[session_no]'nun tek bir skaler dönmesi için seriyi kurmadan ÖNCE
-    # (region, session_no) bazında tek değere indirgiyoruz (mean — eski
-    # seans-seviyesi CSV'lerde zaten tek satır olduğundan sonuç değişmez).
-    session_metric = pdf.groupby(["region", "session_no"], as_index=False)[metric].mean()
     region_series: dict[str, pd.Series] = {
         region: rgrp.sort_values("session_no").set_index("session_no")[metric]
-        for region, rgrp in session_metric.groupby("region", sort=False)
+        for region, rgrp in pdf.groupby("region", sort=False)
     }
 
     # Bölge bazlı zamansal kararlılık: pencere/session'a göre değil, bölgenin

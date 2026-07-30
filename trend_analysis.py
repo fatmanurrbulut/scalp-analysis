@@ -37,22 +37,6 @@ def _terminal_vellus_ratio(rows: pd.DataFrame) -> float | None:
     return terminal_count / vellus_count
 
 
-def _tail_sessions(rows: pd.DataFrame, n_sessions: int) -> pd.DataFrame:
-    """
-    Strand-seviyesi CSV'lerde (her satır tek bir kıl) aynı session_date'te
-    birden çok satır bulunur — `.tail(n)` satır sayısına göre keser, bu da
-    strand modelinde "son n seans" değil "son n kıl" demektir. Bunun yerine
-    son `n_sessions` FARKLI session_date'e ait TÜM satırlar seçilir.
-
-    Eski (seans-seviyesi, 1 satır/tarih) CSV'lerde `.tail(n)` ile birebir
-    aynı sonucu verir — davranış değişikliği yoktur.
-    """
-    if rows.empty:
-        return rows
-    last_dates = rows["session_date"].drop_duplicates().sort_values().tail(n_sessions)
-    return rows[rows["session_date"].isin(last_dates)]
-
-
 # compute_personal_margin artık margin_utils.py'de tanımlı (scalp_analysis.py
 # ile ortak kullanım + circular import riskini önlemek için). Bu modül onu
 # yukarıdan import eder; floor_pct ve anomaly_flags (kontaminasyon koruması)
@@ -177,46 +161,26 @@ def analyze_region_trend(
     # TV oranı, tek bir seansın hair_type'ından hesaplanamaz (bir seansta bölge
     # başına tek bir sınıflandırma var); son `window_size` seansın penceresi
     # kullanılır — hem yeterli veri sağlar hem de eski/stale seansların oranı
-    # sulandırmasını önler (tüm geçmiş yerine). `_tail_sessions` satır değil
-    # SESSION sayısına göre keser (strand-seviyesi CSV'lerde bir session_date'te
-    # birden çok satır olabilir).
-    occipital_rows = _tail_sessions(pdf[pdf["region"] == "Occipital"], window_size)
+    # sulandırmasını önler (tüm geçmiş yerine).
+    occipital_rows = pdf[pdf["region"] == "Occipital"].tail(window_size)
     occipital_tv = _terminal_vellus_ratio(occipital_rows) if not occipital_rows.empty else None
 
     for region, rgrp in pdf.groupby("region", sort=False):
         rgrp = rgrp.sort_values("session_date").reset_index(drop=True)
+        n = len(rgrp)
 
-        # Strand-seviyesi CSV'lerde (her satır tek bir kıl) aynı session_date
-        # için birden çok satır bulunur; density/thickness bu satırlarda
-        # TEKRARLANIR. Regresyon/pencere/kalibrasyon hesapları ÖNCE session
-        # bazında tek değere indirgenmiş bu görünümü kullanır — T/V hesabı
-        # (yukarıda ve aşağıda) HAM `rgrp` satırlarını saymaya devam eder,
-        # bu session-collapse'dan etkilenmez. Eski (1 satır/session) CSV'lerde
-        # session_view == rgrp (davranış değişikliği yoktur).
-        session_view = (
-            rgrp.groupby("session_date", as_index=False)
-            .agg(
-                hair_density_hairs_cm2=("hair_density_hairs_cm2", "mean"),
-                hair_thickness_um=("hair_thickness_um", "mean"),
-                terminal_pct=("hair_type", lambda s: (s == "Terminal").mean() * 100.0),
-            )
-            .sort_values("session_date")
-            .reset_index(drop=True)
-        )
-        n = len(session_view)
-
-        density = session_view["hair_density_hairs_cm2"].values.astype(float)
-        thickness = session_view["hair_thickness_um"].values.astype(float)
-        is_terminal = session_view["terminal_pct"]
+        density = rgrp["hair_density_hairs_cm2"].values.astype(float)
+        thickness = rgrp["hair_thickness_um"].values.astype(float)
+        is_terminal = (rgrp["hair_type"] == "Terminal").astype(float) * 100.0
         density_margin = compute_personal_margin(
-            session_view,
+            rgrp,
             "hair_density_hairs_cm2",
             calibration_size,
             fallback_pct,
             floor_pct,
         )
         thickness_margin = compute_personal_margin(
-            session_view,
+            rgrp,
             "hair_thickness_um",
             calibration_size,
             fallback_pct,
@@ -249,7 +213,7 @@ def analyze_region_trend(
         region_latest = rgrp[rgrp["session_date"] == rgrp["session_date"].max()]
         observed_density = float(region_latest["hair_density_hairs_cm2"].mean())
         observed_thickness = float(region_latest["hair_thickness_um"].mean())
-        observed_tv = _terminal_vellus_ratio(_tail_sessions(rgrp, window_size))
+        observed_tv = _terminal_vellus_ratio(rgrp.tail(window_size))
         projected_tv = (
             project_tv_ratio(occipital_tv, region)
             if occipital_tv is not None
