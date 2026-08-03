@@ -39,6 +39,25 @@ Docker ile benchmark (opsiyonel profil):
 docker compose --profile benchmark run --rm benchmark
 ```
 
+## Dashboard (Streamlit)
+
+`app.py`, `docker-compose.yml`'deki `dashboard` servisiyle çalışan ayrı bir
+Streamlit arayüzüdür (API'den bağımsız bir process).
+
+```bash
+docker compose up --build dashboard   # http://localhost:8501
+
+# veya manuel:
+streamlit run app.py
+```
+
+İki sekmeden oluşur:
+
+| Sekme | Açıklama |
+|---|---|
+| **📊 Hasta Analizi** | Bu README'nin geri kalanında anlatılan anomali/trend/ANOVA analizi. Sidebar'dan CSV yüklenip bir hasta seçilmeden görüntülenmez; veri `validate_and_prepare` şemasından geçmek zorundadır (bkz. [Veri Doğrulama](#veri-doğrulama-data-validation)). |
+| **🗂️ CSV İncele** | Şemadan bağımsız, genel amaçlı CSV inceleme aracı (`csv_inspector.py`). Herhangi bir CSV yüklenip kolonlar (hasta/tarih/region/isim/sayısal) otomatik tanınır — isim ipuçları ve değer örneklemesiyle; `image_url`, `device_info`, `_px` gibi çöp kolonlar otomatik gizlenir. Roller ve görünürlük "Kolon Ayarları" panelinden elle değiştirilebilir. Hasta → tarih (güne indirgenmiş) → region şeklinde kademeli filtrelenir; isteğe bağlı ikinci bir "hasta listesi" CSV'siyle `patient_id` üzerinden ad/soyad eşleştirilir. Üstte satır/hasta sayısı ve sayısal kolon ortalamaları, altta ilk 250 satırlık (tıklayınca sıralanabilen) bir tablo gösterilir. Sidebar'daki Hasta Analizi CSV'sinden tamamen bağımsız çalışır. |
+
 ## API Dokümantasyonu
 
 Servis çalışırken: http://localhost:8000/docs
